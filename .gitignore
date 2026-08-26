@@ -1,0 +1,37 @@
+# Operating systems and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+.cache/
+
+# Dependencies and build artifacts
+node_modules/
+dist/
+build/
+target/
+coverage/
+
+# Language tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
