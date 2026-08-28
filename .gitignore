@@ -22,12 +22,21 @@ temp/
 
 # Dependencies and build artifacts
 node_modules/
+.next/
+.worker-dist/
+playwright-report/
+test-results/
+blob-report/
 dist/
 build/
 target/
 coverage/
 
+# Generated Prisma client
+src/generated/prisma/
+
 # Language tooling
+*.tsbuildinfo
 __pycache__/
 *.py[cod]
 .pytest_cache/

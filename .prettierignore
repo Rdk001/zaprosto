@@ -1,0 +1,8 @@
+.next
+.worker-dist
+coverage
+node_modules
+playwright-report
+test-results
+src/generated/prisma
+package-lock.json

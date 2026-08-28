@@ -1,0 +1,299 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ScheduleExceptionType {
+  DAY_OFF
+  CUSTOM_HOURS
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+}
+
+enum AppointmentSource {
+  ONLINE
+  ADMIN
+}
+
+enum MasterSelection {
+  SPECIFIC
+  ANY
+}
+
+enum AppointmentActor {
+  CLIENT
+  ADMIN
+  SYSTEM
+}
+
+enum NotificationType {
+  APPOINTMENT_CREATED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_CHANGED
+  APPOINTMENT_REMINDER
+  ADMIN_APPOINTMENT_CREATED
+  ADMIN_APPOINTMENT_CANCELLED
+}
+
+enum NotificationStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+model MediaObject {
+  id         String   @id @default(uuid()) @db.Uuid
+  storageKey String   @unique @map("storage_key")
+  mimeType   String   @map("mime_type")
+  sizeBytes  Int      @map("size_bytes")
+  width      Int?
+  height     Int?
+  checksum   String
+  uploadedAt DateTime @default(now()) @map("uploaded_at") @db.Timestamptz(3)
+
+  businessLogo BusinessSettings? @relation("BusinessLogo")
+  masterPhoto  Master?           @relation("MasterPhoto")
+
+  @@map("media_objects")
+}
+
+model BusinessSettings {
+  id                 Int          @id @default(1)
+  businessName       String       @map("business_name")
+  timezone           String       @default("Europe/Moscow")
+  bookingHorizonDays Int          @default(30) @map("booking_horizon_days")
+  logoMediaId        String?      @unique @map("logo_media_id") @db.Uuid
+  createdAt          DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  logo               MediaObject? @relation("BusinessLogo", fields: [logoMediaId], references: [id], onDelete: SetNull)
+
+  @@map("business_settings")
+}
+
+model Service {
+  id              String   @id @default(uuid()) @db.Uuid
+  name            String
+  priceKopecks    Int      @map("price_kopecks")
+  durationMinutes Int      @map("duration_minutes")
+  isActive        Boolean  @default(true) @map("is_active")
+  displayOrder    Int      @default(0) @map("display_order")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  masters      MasterService[]
+  appointments Appointment[]
+
+  @@index([isActive, displayOrder])
+  @@map("services")
+}
+
+model Master {
+  id           String       @id @default(uuid()) @db.Uuid
+  name         String
+  description  String?
+  isActive     Boolean      @default(true) @map("is_active")
+  displayOrder Int          @default(0) @map("display_order")
+  photoMediaId String?      @unique @map("photo_media_id") @db.Uuid
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  photo        MediaObject? @relation("MasterPhoto", fields: [photoMediaId], references: [id], onDelete: SetNull)
+
+  services            MasterService[]
+  weeklyWorkIntervals WeeklyWorkInterval[]
+  weeklyBreaks        WeeklyBreak[]
+  scheduleExceptions  ScheduleException[]
+  appointments        Appointment[]
+
+  @@index([isActive, displayOrder])
+  @@map("masters")
+}
+
+model MasterService {
+  masterId  String   @map("master_id") @db.Uuid
+  serviceId String   @map("service_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  master    Master   @relation(fields: [masterId], references: [id], onDelete: Cascade)
+  service   Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([masterId, serviceId])
+  @@index([serviceId])
+  @@map("master_services")
+}
+
+model WeeklyWorkInterval {
+  id        String   @id @default(uuid()) @db.Uuid
+  masterId  String   @map("master_id") @db.Uuid
+  dayOfWeek Int      @map("day_of_week")
+  startsAt  DateTime @map("starts_at") @db.Time(0)
+  endsAt    DateTime @map("ends_at") @db.Time(0)
+  master    Master   @relation(fields: [masterId], references: [id], onDelete: Cascade)
+
+  @@index([masterId, dayOfWeek])
+  @@map("weekly_work_intervals")
+}
+
+model WeeklyBreak {
+  id        String   @id @default(uuid()) @db.Uuid
+  masterId  String   @map("master_id") @db.Uuid
+  dayOfWeek Int      @map("day_of_week")
+  startsAt  DateTime @map("starts_at") @db.Time(0)
+  endsAt    DateTime @map("ends_at") @db.Time(0)
+  master    Master   @relation(fields: [masterId], references: [id], onDelete: Cascade)
+
+  @@index([masterId, dayOfWeek])
+  @@map("weekly_breaks")
+}
+
+model ScheduleException {
+  id        String                  @id @default(uuid()) @db.Uuid
+  masterId  String                  @map("master_id") @db.Uuid
+  localDate DateTime                @map("local_date") @db.Date
+  type      ScheduleExceptionType
+  master    Master                  @relation(fields: [masterId], references: [id], onDelete: Cascade)
+  intervals ExceptionWorkInterval[]
+
+  @@unique([masterId, localDate])
+  @@map("schedule_exceptions")
+}
+
+model ExceptionWorkInterval {
+  id                  String            @id @default(uuid()) @db.Uuid
+  scheduleExceptionId String            @map("schedule_exception_id") @db.Uuid
+  startsAt            DateTime          @map("starts_at") @db.Time(0)
+  endsAt              DateTime          @map("ends_at") @db.Time(0)
+  scheduleException   ScheduleException @relation(fields: [scheduleExceptionId], references: [id], onDelete: Cascade)
+
+  @@index([scheduleExceptionId])
+  @@map("exception_work_intervals")
+}
+
+model BookingRequest {
+  id             String       @id @default(uuid()) @db.Uuid
+  idempotencyKey String       @unique @map("idempotency_key")
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  appointment    Appointment?
+
+  @@map("booking_requests")
+}
+
+model Appointment {
+  id                      String            @id @default(uuid()) @db.Uuid
+  masterId                String            @map("master_id") @db.Uuid
+  serviceId               String            @map("service_id") @db.Uuid
+  bookingRequestId        String            @unique @map("booking_request_id") @db.Uuid
+  startsAt                DateTime          @map("starts_at") @db.Timestamptz(3)
+  endsAt                  DateTime          @map("ends_at") @db.Timestamptz(3)
+  clientName              String            @map("client_name")
+  clientPhone             String            @map("client_phone")
+  status                  AppointmentStatus @default(SCHEDULED)
+  source                  AppointmentSource
+  masterSelection         MasterSelection   @map("master_selection")
+  serviceNameSnapshot     String            @map("service_name_snapshot")
+  servicePriceSnapshot    Int               @map("service_price_snapshot")
+  serviceDurationSnapshot Int               @map("service_duration_snapshot")
+  cancellationTokenHash   String            @unique @map("cancellation_token_hash")
+  cancelledAt             DateTime?         @map("cancelled_at") @db.Timestamptz(3)
+  cancelledBy             AppointmentActor? @map("cancelled_by")
+  cancellationReason      String?           @map("cancellation_reason")
+  createdAt               DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  master                  Master            @relation(fields: [masterId], references: [id], onDelete: Restrict)
+  service                 Service           @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  bookingRequest          BookingRequest    @relation(fields: [bookingRequestId], references: [id], onDelete: Restrict)
+
+  statusHistory    AppointmentStatusHistory[]
+  telegramLink     TelegramLink?
+  notificationJobs NotificationOutbox[]
+
+  @@index([masterId, startsAt])
+  @@index([status, startsAt])
+  @@map("appointments")
+}
+
+model AppointmentStatusHistory {
+  id               String             @id @default(uuid()) @db.Uuid
+  appointmentId    String             @map("appointment_id") @db.Uuid
+  previousStatus   AppointmentStatus? @map("previous_status")
+  newStatus        AppointmentStatus  @map("new_status")
+  changedAt        DateTime           @default(now()) @map("changed_at") @db.Timestamptz(3)
+  changedBy        AppointmentActor   @map("changed_by")
+  changedByAdminId String?            @map("changed_by_admin_id") @db.Uuid
+  reason           String?
+  appointment      Appointment        @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  changedByAdmin   AdminUser?         @relation(fields: [changedByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([appointmentId, changedAt])
+  @@map("appointment_status_history")
+}
+
+model TelegramLink {
+  id             String      @id @default(uuid()) @db.Uuid
+  appointmentId  String      @unique @map("appointment_id") @db.Uuid
+  tokenHash      String      @unique @map("token_hash")
+  expiresAt      DateTime    @map("expires_at") @db.Timestamptz(3)
+  usedAt         DateTime?   @map("used_at") @db.Timestamptz(3)
+  telegramUserId BigInt?     @map("telegram_user_id")
+  telegramChatId BigInt?     @map("telegram_chat_id")
+  linkedAt       DateTime?   @map("linked_at") @db.Timestamptz(3)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  appointment    Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  @@map("telegram_links")
+}
+
+model NotificationOutbox {
+  id            String             @id @default(uuid()) @db.Uuid
+  appointmentId String?            @map("appointment_id") @db.Uuid
+  type          NotificationType
+  status        NotificationStatus @default(PENDING)
+  scheduledAt   DateTime           @map("scheduled_at") @db.Timestamptz(3)
+  attempts      Int                @default(0)
+  lastError     String?            @map("last_error")
+  dedupeKey     String             @unique @map("dedupe_key")
+  payload       Json
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  appointment   Appointment?       @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  @@index([status, scheduledAt])
+  @@map("notification_outbox")
+}
+
+model AdminUser {
+  id                  String    @id @default(uuid()) @db.Uuid
+  login               String    @unique
+  passwordHash        String    @map("password_hash")
+  isActive            Boolean   @default(true) @map("is_active")
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sessions      AdminSession[]
+  statusChanges AppointmentStatusHistory[]
+
+  @@map("admin_users")
+}
+
+model AdminSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  adminId   String    @map("admin_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, expiresAt])
+  @@map("admin_sessions")
+}
