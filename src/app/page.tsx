@@ -1,18 +1,35 @@
-export default function Home() {
+/* Full navigation intentionally reloads the nonce-protected document and session recovery state. */
+/* eslint-disable @next/next/no-html-link-for-pages */
+import { connection } from "next/server";
+import { BookingFlow } from "../components/booking/booking-flow";
+import { getPublicCatalog } from "../server/public/catalog";
+export default async function Home() {
+  await connection();
+  let catalog;
+  try {
+    catalog = await getPublicCatalog();
+  } catch {
+    catalog = null;
+  }
+  if (!catalog)
+    return (
+      <main id="main" tabIndex={-1} className="shell">
+        <section className="panel recovery">
+          <p className="eyebrow">Онлайн-запись</p>
+          <h1>Пока не можем показать расписание</h1>
+          <p>
+            Сервис временно недоступен или каталог ещё не настроен. Попробуйте открыть страницу
+            позже.
+          </p>
+          <a className="primary" href="/">
+            Обновить страницу
+          </a>
+        </section>
+      </main>
+    );
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl items-center px-6 py-16">
-      <section aria-labelledby="page-title" className="space-y-4">
-        <p className="text-sm font-semibold tracking-[0.18em] text-stone-500 uppercase">
-          Онлайн-запись
-        </p>
-        <h1 id="page-title" className="text-5xl font-bold tracking-tight text-stone-900">
-          Запросто
-        </h1>
-        <p className="max-w-xl text-lg leading-8 text-stone-600">
-          Каркас приложения запущен. Клиентская запись и административные функции появятся на
-          следующих этапах.
-        </p>
-      </section>
+    <main id="main" tabIndex={-1} className="shell">
+      <BookingFlow catalog={catalog} />
     </main>
   );
 }

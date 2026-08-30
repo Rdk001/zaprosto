@@ -23,6 +23,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zaprosto}:${POSTGRES_PASSWORD:-zaprosto_local_only}@db:5432/${POSTGRES_DB:-zaprosto}?schema=public
       NODE_ENV: production
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3000}
+      TRUST_PROXY_CLIENT_IP: ${TRUST_PROXY_CLIENT_IP:-false}
     ports:
       - "3000:3000"
     volumes:

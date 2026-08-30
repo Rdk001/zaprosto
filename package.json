@@ -21,13 +21,14 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:e2e": "playwright test",
+    "test:e2e": "node --env-file-if-exists=.env scripts/test-postgres.mjs --e2e",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:migrate:status": "prisma migrate status",
     "prisma:studio": "prisma studio",
-    "test:postgres": "node --env-file-if-exists=.env scripts/test-postgres.mjs"
+    "test:postgres": "node --env-file-if-exists=.env scripts/test-postgres.mjs",
+    "demo:seed": "node --env-file-if-exists=.env --import tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",

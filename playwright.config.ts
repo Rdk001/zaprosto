@@ -1,25 +1,19 @@
 import { defineConfig, devices } from "@playwright/test";
-
+const port = 3108;
 export default defineConfig({
   testDir: "./tests/e2e",
-  fullyParallel: true,
+  fullyParallel: false,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 2 : 0,
-  reporter: "html",
-  use: {
-    baseURL: "http://localhost:3000",
-    trace: "on-first-retry",
-  },
-  projects: [
-    {
-      name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
-    },
-  ],
+  retries: 0,
+  reporter: [["list"], ["html", { open: "never" }]],
+  use: { baseURL: `http://localhost:${port}`, trace: "off", screenshot: "off" },
+  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "npm run dev",
-    url: "http://localhost:3000/api/health",
-    reuseExistingServer: !process.env.CI,
+    command: `node node_modules/next/dist/bin/next start -p ${port}`,
+    url: `http://localhost:${port}/api/health`,
+    reuseExistingServer: false,
     timeout: 120_000,
+    env: { PUBLIC_ORIGIN: `http://localhost:${port}` },
   },
 });

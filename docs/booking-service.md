@@ -1,6 +1,6 @@
 # Серверное бронирование: этап 04.1
 
-Реализованы прикладные сервисы без UI, HTTP endpoints и Server Actions. Для Next.js следует импортировать `booking` и `prepareBookingAttempt` из `src/modules/booking/server`, а `clientAppointments` — из `src/modules/appointments/server`: эти точки входа помечены `server-only`. Factory-функции в файлах сервисов предназначены для серверной композиции и тестов.
+Эта страница описывает независимые прикладные сервисы этапа 04.1. Подключённый UI, HTTP endpoint доступности и Server Actions этапа 04.2 описаны в [public-booking.md](public-booking.md). Для Next.js следует импортировать `booking` и `prepareBookingAttempt` из `src/modules/booking/server`, а `clientAppointments` — из `src/modules/appointments/server`: эти точки входа помечены `server-only`. Factory-функции в файлах сервисов предназначены для серверной композиции и тестов.
 
 ## Контракт вызовов
 
@@ -72,4 +72,4 @@ npm run test:postgres
 
 ## Граница этапа
 
-04.1 не включает интерфейс записи, админку, авторизацию, перенос, Telegram-бота или отправку уведомлений. 04.2 предстоит подключить серверные сервисы к русскоязычному mobile-first UI и реализовать защищённые публичные точки входа с ограничением частоты. Весь этап 04 ещё не завершён.
+04.1 не включает интерфейс записи, админку, авторизацию, перенос, Telegram-бота или отправку уведомлений. В 04.2 сервисы подключены к русскоязычному mobile-first UI; публичные точки входа защищены проверкой Origin и ограничением частоты в PostgreSQL. Telegram остаётся этапом 06.

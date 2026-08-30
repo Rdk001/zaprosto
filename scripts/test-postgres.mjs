@@ -38,7 +38,16 @@ try {
     TEST_DATABASE_URL: target.toString(),
   };
   await run("node_modules/prisma/build/index.js", ["migrate", "deploy"], env);
-  await run("node_modules/vitest/vitest.mjs", ["run", ...process.argv.slice(2)], env);
+  if (process.argv.includes("--e2e")) {
+    await run("node_modules/tsx/dist/cli.mjs", ["scripts/seed-demo.ts"], env);
+    await run(
+      "node_modules/@playwright/test/cli.js",
+      ["test", ...process.argv.slice(2).filter((arg) => arg !== "--e2e")],
+      env,
+    );
+  } else {
+    await run("node_modules/vitest/vitest.mjs", ["run", ...process.argv.slice(2)], env);
+  }
 } finally {
   try {
     if (created) {

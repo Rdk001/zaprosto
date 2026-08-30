@@ -298,3 +298,12 @@ model AdminSession {
   @@index([adminId, expiresAt])
   @@map("admin_sessions")
 }
+
+model PublicRateLimit {
+  key       String   @id
+  hits      Int
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@index([expiresAt])
+  @@map("public_rate_limits")
+}
