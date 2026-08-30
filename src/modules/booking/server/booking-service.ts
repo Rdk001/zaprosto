@@ -1,0 +1,205 @@
+import { randomUUID } from "node:crypto";
+
+import type { Prisma, PrismaClient } from "../../../generated/prisma/client";
+import { isAppointmentOverlap, retryTransaction } from "../../../server/db/transaction-errors";
+import { confirmationSelect, toConfirmation } from "../../appointments/server/confirmation";
+import { SchedulingError } from "../../scheduling/domain/errors";
+import {
+  createSchedulingAvailabilityService,
+  systemClock,
+  type Clock,
+} from "../../scheduling/server/availability-service";
+import { createBookingSchema, inputIssues, type CreateBookingInput } from "../domain/booking-input";
+import { hashBookingRequest, hashBookingToken, matchesBookingToken } from "./booking-security";
+import type { BookingAvailability, BookingRejectionReason, CreateBookingResult } from "./types";
+
+class SlotUnavailable extends Error {}
+
+function rejectionReason(error: unknown): BookingRejectionReason | null {
+  if (!(error instanceof SchedulingError)) return null;
+  switch (error.code) {
+    case "SERVICE_NOT_FOUND":
+    case "INACTIVE_SERVICE":
+    case "MASTER_NOT_ELIGIBLE":
+    case "BOOKING_DATE_OUT_OF_RANGE":
+      return error.code;
+    default:
+      return null;
+  }
+}
+
+export class BookingService {
+  constructor(
+    private readonly database: PrismaClient,
+    private readonly clock: Clock = systemClock,
+  ) {}
+
+  async createBooking(rawInput: unknown): Promise<CreateBookingResult> {
+    const parsed = createBookingSchema.safeParse(rawInput);
+    if (!parsed.success)
+      return { ok: false, code: "INVALID_INPUT", issues: inputIssues(parsed.error) };
+    const input = parsed.data;
+    try {
+      return await retryTransaction(() =>
+        this.database.$transaction((tx) => this.createInTransaction(tx, input), {
+          isolationLevel: "Serializable",
+          maxWait: 5_000,
+          timeout: 10_000,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof SlotUnavailable || isAppointmentOverlap(error)) {
+        // The failed transaction has rolled back. Read availability in a new snapshot.
+        return {
+          ok: false,
+          code: "SLOT_UNAVAILABLE",
+          availability: await this.freshAvailability(input),
+        };
+      }
+      const reason = rejectionReason(error);
+      if (reason) return { ok: false, code: "REQUEST_REJECTED", reason };
+      throw error;
+    }
+  }
+
+  private async createInTransaction(
+    tx: Prisma.TransactionClient,
+    input: CreateBookingInput,
+  ): Promise<CreateBookingResult> {
+    const requestHash = hashBookingRequest(input);
+    const requestId = randomUUID();
+    // Only this unique key is a replay. Other uniqueness violations must still fail.
+    // Concurrent same-key inserts wait here; Serializable may require a fresh transaction.
+    const inserted = await tx.$executeRaw`
+      INSERT INTO booking_requests (id, idempotency_key, request_hash)
+      VALUES (${requestId}::uuid, ${input.idempotencyKey}, ${requestHash})
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `;
+
+    if (inserted === 0) {
+      const previous = await tx.bookingRequest.findUniqueOrThrow({
+        where: { idempotencyKey: input.idempotencyKey },
+        select: {
+          requestHash: true,
+          appointment: { select: { ...confirmationSelect, cancellationTokenHash: true } },
+        },
+      });
+      if (
+        !previous.appointment ||
+        !previous.requestHash ||
+        previous.requestHash !== requestHash ||
+        !matchesBookingToken(input.cancellationToken, previous.appointment.cancellationTokenHash)
+      ) {
+        return { ok: false, code: "IDEMPOTENCY_CONFLICT" };
+      }
+      // A replay is authenticated with the original token and returns current status,
+      // even after cancellation, a catalog change or the original date leaving the horizon.
+      return {
+        ok: true,
+        replayed: true,
+        confirmation: toConfirmation(previous.appointment),
+        cancellationToken: input.cancellationToken,
+      };
+    }
+
+    const scheduling = createSchedulingAvailabilityService(tx, this.clock);
+    const query = {
+      serviceId: input.serviceId,
+      localDate: input.localDate,
+      startsAt: input.startsAt,
+    };
+    let masterId: string;
+    if (input.master.type === "ANY") {
+      const selection = await scheduling.selectAnyMaster(query);
+      if (!selection.selectedMaster) throw new SlotUnavailable();
+      masterId = selection.selectedMaster.id;
+    } else {
+      masterId = input.master.masterId;
+    }
+    const checked = await scheduling.checkMasterInterval({ ...query, masterId });
+    if (!checked.isAvailable) throw new SlotUnavailable();
+
+    // Scheduling and snapshots see the same serializable database snapshot.
+    const service = await tx.service.findUniqueOrThrow({
+      where: { id: input.serviceId },
+      select: { name: true, priceKopecks: true, durationMinutes: true },
+    });
+    const appointment = await tx.appointment.create({
+      data: {
+        bookingRequestId: requestId,
+        masterId,
+        serviceId: input.serviceId,
+        startsAt: checked.interval.startsAt,
+        endsAt: checked.interval.endsAt,
+        clientName: input.clientName,
+        clientPhone: input.clientPhone,
+        status: "SCHEDULED",
+        source: "ONLINE",
+        masterSelection: input.master.type,
+        serviceNameSnapshot: service.name,
+        servicePriceSnapshot: service.priceKopecks,
+        serviceDurationSnapshot: service.durationMinutes,
+        cancellationTokenHash: hashBookingToken(input.cancellationToken),
+        statusHistory: {
+          create: {
+            previousStatus: null,
+            newStatus: "SCHEDULED",
+            changedBy: "CLIENT",
+            changedAt: this.clock.now(),
+          },
+        },
+      },
+      select: confirmationSelect,
+    });
+    return {
+      ok: true,
+      replayed: false,
+      confirmation: toConfirmation(appointment),
+      cancellationToken: input.cancellationToken,
+    };
+  }
+
+  private async freshAvailability(input: CreateBookingInput): Promise<BookingAvailability> {
+    const scope = { serviceId: input.serviceId, localDate: input.localDate };
+    try {
+      return await this.database.$transaction(
+        async (tx) => {
+          const scheduling = createSchedulingAvailabilityService(tx, this.clock);
+          if (input.master.type === "SPECIFIC") {
+            const result = await scheduling.getMasterAvailability({
+              ...scope,
+              masterId: input.master.masterId,
+            });
+            return {
+              ...scope,
+              timeZone: result.timeZone,
+              slots: result.slots.map((slot) => ({
+                ...slot,
+                masters: [{ id: result.master.id, name: result.master.name }],
+              })),
+            };
+          }
+          const result = await scheduling.getAnyMasterAvailability(scope);
+          return {
+            ...scope,
+            timeZone: result.timeZone,
+            slots: result.slots.map((slot) => ({
+              startsAt: slot.startsAt,
+              endsAt: slot.endsAt,
+              masters: slot.candidates.map(({ id, name }) => ({ id, name })),
+            })),
+          };
+        },
+        { isolationLevel: "RepeatableRead", maxWait: 5_000, timeout: 10_000 },
+      );
+    } catch (error) {
+      const reason = rejectionReason(error);
+      if (reason) return { ...scope, slots: [], unavailableReason: reason };
+      throw error;
+    }
+  }
+}
+
+export function createBookingService(database: PrismaClient, clock: Clock = systemClock) {
+  return new BookingService(database, clock);
+}

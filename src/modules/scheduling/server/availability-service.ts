@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { PrismaClient } from "../../../generated/prisma/client";
+import type { Prisma } from "../../../generated/prisma/client";
 import {
   combineMasterAvailability,
   selectAnyMasterForSlot,
@@ -80,7 +80,7 @@ function compareMasterSummaries(
 
 export class SchedulingAvailabilityService {
   constructor(
-    private readonly database: PrismaClient,
+    private readonly database: Prisma.TransactionClient,
     private readonly clock: Clock = systemClock,
   ) {}
 
@@ -393,7 +393,7 @@ export class SchedulingAvailabilityService {
 }
 
 export function createSchedulingAvailabilityService(
-  database: PrismaClient,
+  database: Prisma.TransactionClient,
   clock: Clock = systemClock,
 ): SchedulingAvailabilityService {
   return new SchedulingAvailabilityService(database, clock);
