@@ -1,5 +1,9 @@
 /* Full document links preserve the nonce-CSP navigation policy of 05.1. */
-export function AdminNavigation({ current }: { current: "home" | "services" | "masters" }) {
+export function AdminNavigation({
+  current,
+}: {
+  current: "home" | "services" | "masters" | "schedule";
+}) {
   return (
     <nav className="admin-nav" aria-label="Административные разделы">
       <a href="/admin" aria-current={current === "home" ? "page" : undefined}>
@@ -10,6 +14,9 @@ export function AdminNavigation({ current }: { current: "home" | "services" | "m
       </a>
       <a href="/admin/masters" aria-current={current === "masters" ? "page" : undefined}>
         Мастера
+      </a>
+      <a href="/admin/schedule" aria-current={current === "schedule" ? "page" : undefined}>
+        Расписание
       </a>
     </nav>
   );

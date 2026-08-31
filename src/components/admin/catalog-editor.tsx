@@ -269,7 +269,7 @@ export function CatalogEditor({
                 {!draft.target && (
                   <p className="notice">
                     Новому мастеру не создаётся рабочий график. Свободные окна появятся после
-                    настройки расписания на следующем этапе.
+                    настройки расписания в разделе «Расписание».
                   </p>
                 )}
               </>
@@ -386,6 +386,15 @@ export function CatalogEditor({
                   >
                     Редактировать
                   </button>
+                  {kind === "masters" && (
+                    <a
+                      className="secondary"
+                      href={`/admin/schedule?masterId=${row.id}`}
+                      aria-label={`Расписание: ${row.name}`}
+                    >
+                      Расписание
+                    </a>
+                  )}
                   <div className="catalog-move">
                     <button
                       className="secondary"
