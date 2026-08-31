@@ -22,7 +22,11 @@ export function hashBookingRequest(input: CreateBookingInput): string {
   return createHash("sha256")
     .update(
       JSON.stringify([
-        input.expectedServiceTerms === undefined ? "booking-v1" : "booking-v2",
+        input.expectedBusinessContext !== undefined
+          ? "booking-v3"
+          : input.expectedServiceTerms === undefined
+            ? "booking-v1"
+            : "booking-v2",
         input.serviceId,
         input.master.type,
         input.master.type === "SPECIFIC" ? input.master.masterId : null,
@@ -30,7 +34,11 @@ export function hashBookingRequest(input: CreateBookingInput): string {
         input.startsAt.toISOString(),
         input.clientName,
         input.clientPhone,
-        ...(input.expectedServiceTerms === undefined ? [] : [input.expectedServiceTerms]),
+        ...(input.expectedBusinessContext !== undefined
+          ? [input.expectedServiceTerms ?? null, input.expectedBusinessContext]
+          : input.expectedServiceTerms === undefined
+            ? []
+            : [input.expectedServiceTerms]),
       ]),
     )
     .digest("hex");

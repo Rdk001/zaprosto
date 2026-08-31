@@ -33,6 +33,10 @@ export const createBookingSchema = z.strictObject({
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
+  expectedBusinessContext: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
   master: z.discriminatedUnion("type", [
     z.strictObject({ type: z.literal("SPECIFIC"), masterId: uuid }),
     z.strictObject({ type: z.literal("ANY") }),

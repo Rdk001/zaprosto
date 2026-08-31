@@ -1,3 +1,8 @@
+import {
+  businessContextHash,
+  readTimeContext,
+  settingsSelect,
+} from "../../settings/server/context";
 import { randomUUID } from "node:crypto";
 
 import type { Prisma, PrismaClient } from "../../../generated/prisma/client";
@@ -20,6 +25,7 @@ import type { BookingAvailability, BookingRejectionReason, CreateBookingResult }
 
 class SlotUnavailable extends Error {}
 class ServiceTermsChanged extends Error {}
+class BusinessContextChanged extends Error {}
 
 function rejectionReason(error: unknown): BookingRejectionReason | null {
   if (!(error instanceof SchedulingError)) return null;
@@ -54,6 +60,15 @@ export class BookingService {
         }),
       );
     } catch (error) {
+      if (error instanceof BusinessContextChanged)
+        return this.database.$transaction(
+          async (tx) => ({
+            ok: false as const,
+            code: "BUSINESS_CONTEXT_CHANGED" as const,
+            context: await readTimeContext(tx, this.clock.now()),
+          }),
+          { isolationLevel: "RepeatableRead" },
+        );
       if (error instanceof ServiceTermsChanged) return this.freshTerms(input);
       if (error instanceof SlotUnavailable || isAppointmentOverlap(error)) {
         // The failed transaction has rolled back. Read availability in a new snapshot.
@@ -104,6 +119,12 @@ export class BookingService {
       return {
         ok: true,
         replayed: true,
+        timeZone: (
+          await tx.businessSettings.findUniqueOrThrow({
+            where: { id: 1 },
+            select: { timezone: true },
+          })
+        ).timezone,
         confirmation: toConfirmation(previous.appointment),
         cancellationToken: input.cancellationToken,
       };
@@ -115,6 +136,15 @@ export class BookingService {
     if (input.expectedServiceTerms !== publicServiceTerms(service).termsHash)
       throw new ServiceTermsChanged();
 
+    // Lock the singleton row through COMMIT. A settings update after this snapshot causes
+    // a serialization retry rather than accepting a context from before the wait.
+    await tx.$queryRaw`SELECT id FROM business_settings WHERE id = 1 FOR SHARE`;
+    const settings = await tx.businessSettings.findUniqueOrThrow({
+      where: { id: 1 },
+      select: settingsSelect,
+    });
+    if (input.expectedBusinessContext !== businessContextHash(settings))
+      throw new BusinessContextChanged();
     const scheduling = createSchedulingAvailabilityService(tx, this.clock);
     const query = {
       serviceId: input.serviceId,
@@ -163,6 +193,7 @@ export class BookingService {
     return {
       ok: true,
       replayed: false,
+      timeZone: settings.timezone,
       confirmation: toConfirmation(appointment),
       cancellationToken: input.cancellationToken,
     };

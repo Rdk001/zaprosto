@@ -54,7 +54,14 @@ export const weekSchema = z
     (days) => new Set(days.map((d) => d.dayOfWeek)).size === 7,
     "Укажите каждый день недели один раз",
   );
-const target = { masterId: z.uuid(), version };
+const target = {
+  masterId: z.uuid(),
+  version,
+  expectedBusinessContext: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+};
 export const saveWeekSchema = z.strictObject({ ...target, days: weekSchema });
 export const saveExceptionSchema = z
   .strictObject({

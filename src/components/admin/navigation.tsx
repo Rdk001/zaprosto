@@ -2,7 +2,7 @@
 export function AdminNavigation({
   current,
 }: {
-  current: "home" | "services" | "masters" | "schedule";
+  current: "home" | "services" | "masters" | "schedule" | "settings";
 }) {
   return (
     <nav className="admin-nav" aria-label="Административные разделы">
@@ -17,6 +17,9 @@ export function AdminNavigation({
       </a>
       <a href="/admin/schedule" aria-current={current === "schedule" ? "page" : undefined}>
         Расписание
+      </a>
+      <a href="/admin/settings" aria-current={current === "settings" ? "page" : undefined}>
+        Настройки
       </a>
     </nav>
   );

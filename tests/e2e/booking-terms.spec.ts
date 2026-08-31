@@ -167,6 +167,7 @@ for (const legacy of [false, true]) {
       if (legacy) {
         // Emulate data persisted by the old deployment. No production code derives or rewrites v1.
         delete input.expectedServiceTerms;
+        delete input.expectedBusinessContext;
         const requestHash = createHash("sha256")
           .update(
             JSON.stringify([

@@ -1068,3 +1068,17 @@ h3 {
     justify-self: start;
   }
 }
+
+.settings-shell {
+  max-width: 860px;
+}
+.settings-warning {
+  overflow-wrap: anywhere;
+}
+.settings-warning p {
+  margin-block: 1rem;
+}
+
+.settings-shell .field + .hint {
+  margin-top: 10px;
+}

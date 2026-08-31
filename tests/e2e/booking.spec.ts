@@ -1,3 +1,4 @@
+import { businessContextHash } from "../../src/modules/settings/server/context";
 import { publicServiceTerms } from "../../src/modules/catalog/server/service-terms";
 import { expect, test, type Page } from "@playwright/test";
 import { demoMasterIds, demoServiceIds } from "../../scripts/demo-data";
@@ -108,6 +109,9 @@ test("конфликт сбрасывает слот и сохраняет ко�
   const competitor = await createBookingService(db).createBooking({
     ...prepareBookingAttempt(),
     serviceId: demoServiceIds[0],
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
     expectedServiceTerms: publicServiceTerms(
       await db.service.findUniqueOrThrow({ where: { id: demoServiceIds[0] } }),
     ).termsHash,

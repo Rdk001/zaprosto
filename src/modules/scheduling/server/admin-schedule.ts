@@ -1,3 +1,4 @@
+import { businessContextHash, settingsSelect } from "../../settings/server/context";
 import { Temporal } from "temporal-polyfill";
 import type { Prisma } from "../../../generated/prisma/client";
 import {
@@ -41,7 +42,7 @@ export type ScheduleMutationResult =
 export async function readAdminSchedule(tx: Prisma.TransactionClient, query: ScheduleQuery) {
   const settings = await tx.businessSettings.findUniqueOrThrow({
     where: { id: 1 },
-    select: { timezone: true },
+    select: settingsSelect,
   });
   const timezone = assertValidTimeZone(settings.timezone);
   const month = query.month ?? localDateForInstant(new Date(), timezone).slice(0, 7);
@@ -115,6 +116,7 @@ export async function readAdminSchedule(tx: Prisma.TransactionClient, query: Sch
     ok: true as const,
     schedule: {
       timezone,
+      businessContext: businessContextHash(settings),
       month,
       masters,
       nextAfter,
@@ -132,7 +134,14 @@ async function checkVersion(
   tx: Prisma.TransactionClient,
   masterId: string,
   version: number,
+  expectedBusinessContext: string | undefined,
 ): Promise<ScheduleFailure | null> {
+  const settings = await tx.businessSettings.findUniqueOrThrow({
+    where: { id: 1 },
+    select: settingsSelect,
+  });
+  if (expectedBusinessContext !== businessContextHash(settings))
+    return { ok: false, code: "CONFLICT" };
   const master = await tx.master.findUnique({ where: { id: masterId }, select: { version: true } });
   if (!master) return { ok: false, code: "NOT_FOUND" };
   return master.version === version ? null : { ok: false, code: "CONFLICT" };
@@ -154,7 +163,7 @@ export async function saveWeek(
   const parsed = saveWeekSchema.safeParse(raw);
   if (!parsed.success) return scheduleIssues(parsed.error);
   const { masterId, version } = parsed.data;
-  const conflict = await checkVersion(tx, masterId, version);
+  const conflict = await checkVersion(tx, masterId, version, parsed.data.expectedBusinessContext);
   if (conflict) return conflict;
   const days = parsed.data.days
     .map((day) => ({
@@ -192,7 +201,7 @@ export async function saveException(
   const parsed = saveExceptionSchema.safeParse(raw);
   if (!parsed.success) return scheduleIssues(parsed.error);
   const { masterId, version, id, localDate, type } = parsed.data;
-  const conflict = await checkVersion(tx, masterId, version);
+  const conflict = await checkVersion(tx, masterId, version, parsed.data.expectedBusinessContext);
   if (conflict) return conflict;
   if (
     id &&
@@ -207,7 +216,7 @@ export async function saveException(
   if (existing && existing.id !== id) return { ok: false, code: "CONFLICT" };
   const settings = await tx.businessSettings.findUniqueOrThrow({
     where: { id: 1 },
-    select: { timezone: true },
+    select: settingsSelect,
   });
   // Validate every supplied boundary BEFORE merging: normalization must not hide invalid DST times.
   if (type === "CUSTOM_HOURS") {
@@ -257,7 +266,7 @@ export async function deleteException(
   const parsed = deleteExceptionSchema.safeParse(raw);
   if (!parsed.success) return scheduleIssues(parsed.error);
   const { masterId, version, id } = parsed.data;
-  const conflict = await checkVersion(tx, masterId, version);
+  const conflict = await checkVersion(tx, masterId, version, parsed.data.expectedBusinessContext);
   if (conflict) return conflict;
   const existing = await tx.scheduleException.findFirst({
     where: { id, masterId },

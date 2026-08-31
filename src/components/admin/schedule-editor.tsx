@@ -23,7 +23,7 @@ const messages: Record<ScheduleFailure["code"], string> = {
     "Время нельзя однозначно определить в часовом поясе бизнеса. Изменения не сохранены.",
   NOT_FOUND: "Мастер или исключение больше не найдены. Сверьте актуальные данные.",
   CONFLICT:
-    "Данные изменились в другой вкладке или на эту дату уже есть исключение. Черновик сохранён здесь. Сверьте актуальный график, карточку и порядок мастера.",
+    "Данные изменились в другой вкладке или на эту дату уже есть исключение. Черновик сохранён здесь. Сверьте актуальный график, карточку, порядок мастера и часовой пояс бизнеса.",
   UNAUTHORIZED:
     "Сеанс завершён или доступ отключён. Войдите заново в другой вкладке и сверьте данные.",
   FORBIDDEN: "Источник запроса не разрешён. Откройте приложение по основному адресу.",
@@ -248,7 +248,13 @@ export function ScheduleEditor({
         onSubmit={(event) => {
           event.preventDefault();
           run(
-            () => saveWeekAction({ masterId: master.id, version, days }),
+            () =>
+              saveWeekAction({
+                masterId: master.id,
+                version,
+                days,
+                expectedBusinessContext: initial.businessContext,
+              }),
             "Недельный график сохранён.",
           );
         }}
@@ -363,7 +369,11 @@ export function ScheduleEditor({
             aria-busy={pending}
             onSubmit={(event) => {
               event.preventDefault();
-              const target = { masterId: master.id, version };
+              const target = {
+                masterId: master.id,
+                version,
+                expectedBusinessContext: initial.businessContext,
+              };
               run(
                 () =>
                   deleting

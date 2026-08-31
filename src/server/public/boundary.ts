@@ -1,7 +1,13 @@
 import { z } from "zod";
 import type { BookingService } from "../../modules/booking/server/booking-service";
 import type { ClientAppointmentService } from "../../modules/appointments/server/client-appointment-service";
-import type { SchedulingAvailabilityService } from "../../modules/scheduling/server/availability-service";
+import type { PrismaClient } from "../../generated/prisma/client";
+import {
+  createSchedulingAvailabilityService,
+  systemClock,
+  type Clock,
+} from "../../modules/scheduling/server/availability-service";
+import { readTimeContext } from "../../modules/settings/server/context";
 import { prepareBookingAttempt } from "../../modules/booking/server/booking-security";
 import { SchedulingError } from "../../modules/scheduling/domain/errors";
 import { clientIdentity, validOrigin, type PublicOperation } from "./security";
@@ -11,11 +17,16 @@ const availabilitySchema = z.strictObject({
   serviceId: z.uuid(),
   localDate: z.iso.date(),
   masterId: z.uuid().optional(),
+  expectedBusinessContext: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
 });
 export function createPublicBoundary(deps: {
   booking: BookingService;
   appointments: ClientAppointmentService;
-  scheduling: SchedulingAvailabilityService;
+  database: PrismaClient;
+  clock?: Clock;
   limit: (operation: PublicOperation, identity: string) => Promise<boolean>;
 }) {
   async function guard<T>(
@@ -51,31 +62,45 @@ export function createPublicBoundary(deps: {
       guard(h, "availability", false, async () => {
         const parsed = availabilitySchema.safeParse(input);
         if (!parsed.success) return { ok: false as const, code: "INVALID_INPUT" as const };
-        try {
-          const result = parsed.data.masterId
-            ? await deps.scheduling.getMasterAvailability({
-                ...parsed.data,
-                masterId: parsed.data.masterId,
-              })
-            : await deps.scheduling.getAnyMasterAvailability(parsed.data);
-          return {
-            ok: true as const,
-            timeZone: result.timeZone,
-            slots: result.slots.map((slot) => ({ startsAt: slot.startsAt.toISOString() })),
-          };
-        } catch (error) {
-          if (
-            error instanceof SchedulingError &&
-            [
-              "BOOKING_DATE_OUT_OF_RANGE",
-              "MASTER_NOT_ELIGIBLE",
-              "SERVICE_NOT_FOUND",
-              "INACTIVE_SERVICE",
-            ].includes(error.code)
-          )
-            return { ok: false as const, code: "SELECTION_UNAVAILABLE" as const };
-          throw error;
-        }
+        return deps.database.$transaction(
+          async (tx) => {
+            const clock = deps.clock ?? systemClock;
+            const context = await readTimeContext(tx, clock.now());
+            if (
+              parsed.data.expectedBusinessContext &&
+              parsed.data.expectedBusinessContext !== context.contextHash
+            )
+              return { ok: false as const, code: "BUSINESS_CONTEXT_CHANGED" as const, context };
+            const scheduling = createSchedulingAvailabilityService(tx, clock);
+            try {
+              const result = parsed.data.masterId
+                ? await scheduling.getMasterAvailability({
+                    ...parsed.data,
+                    masterId: parsed.data.masterId,
+                  })
+                : await scheduling.getAnyMasterAvailability(parsed.data);
+              return {
+                ok: true as const,
+                timeZone: result.timeZone,
+                context,
+                slots: result.slots.map((slot) => ({ startsAt: slot.startsAt.toISOString() })),
+              };
+            } catch (error) {
+              if (
+                error instanceof SchedulingError &&
+                [
+                  "BOOKING_DATE_OUT_OF_RANGE",
+                  "MASTER_NOT_ELIGIBLE",
+                  "SERVICE_NOT_FOUND",
+                  "INACTIVE_SERVICE",
+                ].includes(error.code)
+              )
+                return { ok: false as const, code: "SELECTION_UNAVAILABLE" as const, context };
+              throw error;
+            }
+          },
+          { isolationLevel: "RepeatableRead", maxWait: 5000, timeout: 10000 },
+        );
       }),
   };
 }

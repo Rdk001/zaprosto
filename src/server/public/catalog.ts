@@ -1,50 +1,44 @@
 import "server-only";
 import { publicServiceTerms } from "../../modules/catalog/server/service-terms";
-import { Temporal } from "temporal-polyfill";
+import { publicTimeContext } from "../../modules/settings/server/context";
 import { prisma } from "../db/prisma";
-import {
-  getBookingDateContext,
-  localDateForInstant,
-} from "../../modules/scheduling/time/business-time";
 
 export async function getPublicCatalog() {
-  const [settings, services] = await Promise.all([
-    prisma.businessSettings.findUnique({ where: { id: 1 } }),
-    prisma.service.findMany({
-      where: { isActive: true },
-      orderBy: [{ displayOrder: "asc" }, { id: "asc" }],
-      select: {
-        id: true,
-        name: true,
-        priceKopecks: true,
-        durationMinutes: true,
-        masters: {
-          where: { master: { isActive: true } },
-          orderBy: [{ master: { displayOrder: "asc" } }, { masterId: "asc" }],
-          select: { master: { select: { id: true, name: true, description: true } } },
-        },
-      },
-    }),
-  ]);
-  if (!settings) return null;
-  const now = new Date();
-  const context = getBookingDateContext(
-    localDateForInstant(now, settings.timezone),
-    settings.timezone,
-    settings.bookingHorizonDays,
-    now,
+  return prisma.$transaction(
+    async (tx) => {
+      const [settings, services] = await Promise.all([
+        tx.businessSettings.findUnique({ where: { id: 1 } }),
+        tx.service.findMany({
+          where: { isActive: true },
+          orderBy: [{ displayOrder: "asc" }, { id: "asc" }],
+          select: {
+            id: true,
+            name: true,
+            priceKopecks: true,
+            durationMinutes: true,
+            masters: {
+              where: { master: { isActive: true } },
+              orderBy: [{ master: { displayOrder: "asc" } }, { masterId: "asc" }],
+              select: { master: { select: { id: true, name: true, description: true } } },
+            },
+          },
+        }),
+      ]);
+      if (!settings) return null;
+      const now = new Date();
+      const context = publicTimeContext(settings, now);
+      return {
+        businessName: settings.businessName,
+        timeZone: context.timeZone,
+        dates: context.dates,
+        context,
+        services: services.map((service) => ({
+          ...publicServiceTerms(service),
+          masters: service.masters.map((row) => row.master),
+        })),
+      };
+    },
+    { isolationLevel: "RepeatableRead" },
   );
-  const dates = Array.from({ length: settings.bookingHorizonDays }, (_, i) =>
-    Temporal.PlainDate.from(context.today).add({ days: i }).toString(),
-  );
-  return {
-    businessName: settings.businessName,
-    timeZone: settings.timezone,
-    dates,
-    services: services.map((service) => ({
-      ...publicServiceTerms(service),
-      masters: service.masters.map((row) => row.master),
-    })),
-  };
 }
 export type PublicCatalog = NonNullable<Awaited<ReturnType<typeof getPublicCatalog>>>;

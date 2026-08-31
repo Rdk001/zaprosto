@@ -1,3 +1,4 @@
+import { businessContextHash } from "../../src/modules/settings/server/context";
 import { createHash } from "node:crypto";
 import { afterAll, beforeEach, expect, it } from "vitest";
 import { createPrismaClient } from "../../src/server/db/create-prisma-client";
@@ -50,6 +51,9 @@ async function fixture(any = false) {
   const input = {
     ...prepareBookingAttempt(),
     serviceId: service.id,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
     expectedServiceTerms: publicServiceTerms(service).termsHash,
     master: any ? { type: "ANY" as const } : { type: "SPECIFIC" as const, masterId: master.id },
     localDate: "2026-10-05",
@@ -108,7 +112,7 @@ for (const any of [false, true]) {
 it.each(changes)("старый формат без отпечатка после %j тоже не создаёт запись", async (change) => {
   const { service, input } = await fixture();
   await db.service.update({ where: { id: service.id }, data: change });
-  const legacy = { ...input, expectedServiceTerms: undefined };
+  const legacy = { ...input, expectedServiceTerms: undefined, expectedBusinessContext: undefined };
   expect(await booking.createBooking(legacy)).toMatchObject({ code: "SERVICE_TERMS_CHANGED" });
   await counts(0);
 });
@@ -157,7 +161,13 @@ it("второе изменение после обновления экрана
     where: { id: service.id },
     data: { priceKopecks: 250000 },
   });
-  const refreshedInput = { ...input, expectedServiceTerms: publicServiceTerms(fresh).termsHash };
+  const refreshedInput = {
+    ...input,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
+    expectedServiceTerms: publicServiceTerms(fresh).termsHash,
+  };
   await db.service.update({ where: { id: service.id }, data: { durationMinutes: 60 } });
   expect(await booking.createBooking(refreshedInput)).toMatchObject({
     code: "SERVICE_TERMS_CHANGED",
@@ -208,7 +218,7 @@ it("потеря успешного ответа, изменение катал�
 });
 it("существующая попытка booking-v1 без условий воспроизводится после изменения каталога", async () => {
   const { service, master, input } = await fixture();
-  const legacy = { ...input, expectedServiceTerms: undefined };
+  const legacy = { ...input, expectedServiceTerms: undefined, expectedBusinessContext: undefined };
   // Persist the historical wire contract independently of the new fingerprint implementation.
   const requestHash = createHash("sha256")
     .update(

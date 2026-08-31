@@ -1,5 +1,5 @@
 "use client";
-import { startTransition, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import type { PublicCatalog } from "../../server/public/catalog";
 import type { AppointmentConfirmation } from "../../modules/appointments/server/confirmation";
 import { normalizeRussianPhone } from "../../modules/booking/domain/phone";
@@ -19,6 +19,9 @@ type Slots = { key: string; values: string[]; error?: string };
 export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
   // Freeze the displayed catalog until an explicit server rejection requires reconfirmation.
   const [services, setServices] = useState(catalog.services);
+  const [timeContext, setTimeContext] = useState(catalog.context);
+  const [changedTime, setChangedTime] = useState(false);
+  const generation = useRef(0);
   const [changedServiceId, setChangedServiceId] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [serviceId, setServiceId] = useState("");
@@ -39,12 +42,34 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
   const [success, setSuccess] = useState<{
     confirmation: AppointmentConfirmation;
     token: string;
+    timeZone: string;
   } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const service = services.find((s) => s.id === serviceId);
   const masterName =
     masterId === "ANY" ? "Любой мастер" : service?.masters.find((m) => m.id === masterId)?.name;
-  const selectionKey = [serviceId, masterId, date, reload].join("|");
+  const selectionKey = [serviceId, masterId, date, reload, timeContext.contextHash].join("|");
+  const applyTimeContext = useCallback(
+    (context: PublicCatalog["context"], preferredDate?: string) => {
+      ++generation.current;
+      setTimeContext(context);
+      setDate((current) =>
+        context.dates.includes(preferredDate ?? current)
+          ? (preferredDate ?? current)
+          : context.dates[0],
+      );
+      setChangedTime(true);
+      setSlot("");
+      setSlots(null);
+      setReview(false);
+      setStep(2);
+      setReload((v) => v + 1);
+      setMessage(
+        "Настройки времени изменились. Проверьте часовой пояс и дату, заново выберите время и подтвердите обновлённые условия. Контакты сохранены.",
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     function restore() {
@@ -72,14 +97,28 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
   }, [step, review]);
   useEffect(() => {
     if (!serviceId || !masterId || !date) return;
+    const request = ++generation.current;
     const controller = new AbortController();
     let current = true;
-    const query = new URLSearchParams({ serviceId, localDate: date });
+    const query = new URLSearchParams({
+      serviceId,
+      localDate: date,
+      expectedBusinessContext: timeContext.contextHash,
+    });
     if (masterId !== "ANY") query.set("masterId", masterId);
     fetch("/api/availability?" + query, { signal: controller.signal, cache: "no-store" })
       .then(async (response) => {
         const result = await response.json();
-        if (!current) return;
+        if (!current || request !== generation.current || lock.current) return;
+        if (result.context && result.context.version < timeContext.version) return;
+        if (
+          result.context &&
+          (result.context.contextHash !== timeContext.contextHash ||
+            !result.context.dates.includes(date))
+        ) {
+          applyTimeContext(result.context);
+          return;
+        }
         setSlots({
           key: selectionKey,
           values: result.ok ? result.slots.map((s: { startsAt: string }) => s.startsAt) : [],
@@ -91,7 +130,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
         });
       })
       .catch(() => {
-        if (current)
+        if (current && request === generation.current && !lock.current)
           setSlots({
             key: selectionKey,
             values: [],
@@ -102,7 +141,15 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
       current = false;
       controller.abort();
     };
-  }, [serviceId, masterId, date, selectionKey]);
+  }, [
+    serviceId,
+    masterId,
+    date,
+    selectionKey,
+    timeContext.contextHash,
+    timeContext.version,
+    applyTimeContext,
+  ]);
   const currentSlots = slots?.key === selectionKey ? slots : null;
 
   function contactsValid() {
@@ -120,6 +167,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
     if (lock.current) return;
     if (!existing && (!contactsValid() || !service || !slot)) return;
     lock.current = true;
+    ++generation.current;
     setBusy(true);
     setMessage("");
     startTransition(async () => {
@@ -135,6 +183,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
             ...prepared.attempt,
             serviceId,
             expectedServiceTerms: service!.termsHash,
+            expectedBusinessContext: timeContext.contextHash,
             master: masterId === "ANY" ? { type: "ANY" } : { type: "SPECIFIC", masterId },
             localDate: date,
             startsAt: slot,
@@ -158,7 +207,11 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
           const receipt = { state: "receipt" as const, token: result.cancellationToken };
           writeAttempt(sessionStorage, receipt);
           setSaved(receipt);
-          setSuccess({ confirmation: result.confirmation, token: result.cancellationToken });
+          setSuccess({
+            confirmation: result.confirmation,
+            token: result.cancellationToken,
+            timeZone: result.timeZone,
+          });
           return;
         }
         if (
@@ -191,13 +244,16 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
         setReview(false);
         setStep(2);
         setReload((v) => v + 1);
-        setMessage(
-          result.code === "SERVICE_TERMS_CHANGED"
-            ? "Условия услуги изменились. Запись не создана. Проверьте новое название, цену и длительность, выберите доступное время и подтвердите обновлённые условия."
-            : result.code === "SLOT_UNAVAILABLE"
-              ? "Это время уже занято. Выберите другое окно — контакты сохранены."
-              : "Запись не создана. Проверьте услугу, мастера и дату, затем выберите доступное время.",
-        );
+        if (result.code === "BUSINESS_CONTEXT_CHANGED")
+          applyTimeContext(result.context, input.localDate);
+        else
+          setMessage(
+            result.code === "SERVICE_TERMS_CHANGED"
+              ? "Условия услуги изменились. Запись не создана. Проверьте новое название, цену и длительность, выберите доступное время и подтвердите обновлённые условия."
+              : result.code === "SLOT_UNAVAILABLE"
+                ? "Это время уже занято. Выберите другое окно — контакты сохранены."
+                : "Запись не создана. Проверьте услугу, мастера и дату, затем выберите доступное время.",
+          );
       } catch {
         setMessage(
           "Ответ не получен. Запись могла сохраниться. Повторите ту же попытку — второй записи не будет.",
@@ -214,6 +270,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
       setSaved(null);
       setSuccess(null);
       setChangedServiceId(null);
+      setChangedTime(false);
       setStep(0);
       setReview(false);
       setSlot("");
@@ -249,7 +306,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
         <Confirmation
           confirmation={success.confirmation}
           token={success.token}
-          timeZone={catalog.timeZone}
+          timeZone={success.timeZone}
         />
       </div>
     );
@@ -457,7 +514,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
           {step === 2 && (
             <>
               <p className="hint">
-                Все даты и время — {catalog.timeZone}, независимо от настроек вашего устройства.
+                Все даты и время — {timeContext.timeZone}, независимо от настроек вашего устройства.
               </p>
               <label className="field date-field">
                 Дата визита
@@ -469,10 +526,10 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
                   }}
                   aria-label="Дата визита"
                 >
-                  {catalog.dates.map((d) => (
+                  {timeContext.dates.map((d) => (
                     <option key={d} value={d}>
                       {calendarDate(d)}
-                      {d === catalog.dates[0] ? " · сегодня" : ""}
+                      {d === timeContext.dates[0] ? " · сегодня" : ""}
                     </option>
                   ))}
                 </select>
@@ -511,7 +568,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
                       className={slot === s ? "selected" : ""}
                       onClick={() => setSlot(s)}
                     >
-                      {time(s, catalog.timeZone)}
+                      {time(s, timeContext.timeZone)}
                     </button>
                   ))}
                 </div>
@@ -600,7 +657,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
                 </div>
                 <div>
                   <dt>Дата и время</dt>
-                  <dd>{dateTime(slot, catalog.timeZone)}</dd>
+                  <dd>{dateTime(slot, timeContext.timeZone)}</dd>
                 </div>
                 <div>
                   <dt>Длительность</dt>
@@ -630,7 +687,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
                 <button className="primary" disabled={busy} onClick={() => submit()}>
                   {busy
                     ? "Создаём запись…"
-                    : changedServiceId === serviceId
+                    : changedServiceId === serviceId || changedTime
                       ? "Подтвердить обновлённые условия"
                       : "Подтвердить запись"}
                 </button>
@@ -658,7 +715,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
             </p>
             <p>
               <span>Когда</span>
-              <strong>{slot ? dateTime(slot, catalog.timeZone) : "Выберите время"}</strong>
+              <strong>{slot ? dateTime(slot, timeContext.timeZone) : "Выберите время"}</strong>
             </p>
           </div>
           <p className="summary-note">

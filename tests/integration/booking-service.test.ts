@@ -1,3 +1,4 @@
+import { businessContextHash } from "../../src/modules/settings/server/context";
 import { publicServiceTerms } from "../../src/modules/catalog/server/service-terms";
 import { randomUUID } from "node:crypto";
 
@@ -60,7 +61,13 @@ async function fixture(count = 1, durationMinutes = 30) {
     masterIds.push(master.id);
     masters.push(master);
   }
-  return { service, masters };
+  return {
+    service,
+    masters,
+    context: businessContextHash(
+      await database.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
+  };
 }
 
 function inputFor(data: Awaited<ReturnType<typeof fixture>>, any = false) {
@@ -70,6 +77,7 @@ function inputFor(data: Awaited<ReturnType<typeof fixture>>, any = false) {
     ...attempt,
     serviceId: data.service.id,
     expectedServiceTerms: publicServiceTerms(data.service).termsHash,
+    expectedBusinessContext: data.context,
     master: any
       ? { type: "ANY" as const }
       : { type: "SPECIFIC" as const, masterId: data.masters[0].id },

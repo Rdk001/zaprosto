@@ -1,3 +1,4 @@
+import { businessContextHash } from "../../src/modules/settings/server/context";
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, expect, it, vi } from "vitest";
 import { createPrismaClient } from "../../src/server/db/create-prisma-client";
@@ -45,7 +46,16 @@ async function read(id = masterId, month = "2026-10") {
   return ok(await boundary.read(token, { masterId: id, month })).schedule;
 }
 async function save(days = week(), id = masterId) {
-  return ok(await boundary.saveWeek(h, token, { masterId: id, version: await version(id), days }));
+  return ok(
+    await boundary.saveWeek(h, token, {
+      masterId: id,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
+      version: await version(id),
+      days,
+    }),
+  );
 }
 async function exception(
   type: "DAY_OFF" | "CUSTOM_HOURS" = "DAY_OFF",
@@ -55,6 +65,9 @@ async function exception(
   return ok(
     await boundary.saveException(h, token, {
       masterId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: await version(),
       id,
       localDate: date,
@@ -170,6 +183,9 @@ it("CUSTOM_HOURS вычитает недельные перерывы, смен�
   ok(
     await boundary.deleteException(h, token, {
       masterId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: await version(),
       id: created.id,
       confirmed: true,
@@ -203,9 +219,19 @@ it.each(["week", "exception"])(
     try {
       const result =
         mode === "week"
-          ? await boundary.saveWeek(h, token, { masterId, version: await version(), days: week() })
+          ? await boundary.saveWeek(h, token, {
+              masterId,
+              expectedBusinessContext: businessContextHash(
+                await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+              ),
+              version: await version(),
+              days: week(),
+            })
           : await boundary.saveException(h, token, {
               masterId,
+              expectedBusinessContext: businessContextHash(
+                await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+              ),
               version: await version(),
               id: old.id,
               localDate: "2026-10-06",
@@ -221,7 +247,14 @@ it.each(["week", "exception"])(
   },
 );
 it("две недели, ABA и изменения каталога/порядка согласуют Master.version", async () => {
-  const request = { masterId, version: 0, days: week() };
+  const request = {
+    masterId,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
+    version: 0,
+    days: week(),
+  };
   const results = await Promise.all([
     boundary.saveWeek(h, token, request),
     second.saveWeek(h, token, request),
@@ -248,7 +281,15 @@ it("две недели, ABA и изменения каталога/порядк
       orderVersion: catalogBefore.masterOrderVersion,
     }),
   );
-  expect(await boundary.saveWeek(h, token, { ...request, version: oldVersion })).toMatchObject({
+  expect(
+    await boundary.saveWeek(h, token, {
+      ...request,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
+      version: oldVersion,
+    }),
+  ).toMatchObject({
     code: "CONFLICT",
   });
   await save();
@@ -265,6 +306,9 @@ it("две недели, ABA и изменения каталога/порядк
 it("создание на одну дату и редактирование против удаления не перезаписывают друг друга", async () => {
   const input = {
     masterId,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
     version: 0,
     id: null,
     localDate: "2026-10-05",
@@ -278,7 +322,13 @@ it("создание на одну дату и редактирование пр
   expect(results.filter((r) => r.ok)).toHaveLength(1);
   expect(results.find((r) => !r.ok)).toMatchObject({ code: "CONFLICT" });
   expect(
-    await boundary.saveException(h, token, { ...input, version: await version() }),
+    await boundary.saveException(h, token, {
+      ...input,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
+      version: await version(),
+    }),
   ).toMatchObject({ code: "CONFLICT" });
   const old = (await read()).exceptions[0];
   const v = await version();
@@ -286,11 +336,22 @@ it("создание на одну дату и редактирование пр
     boundary.saveException(h, token, {
       ...input,
       id: old.id,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: v,
       type: "CUSTOM_HOURS",
       intervals: [interval()],
     }),
-    second.deleteException(h, token, { masterId, version: v, id: old.id, confirmed: true }),
+    second.deleteException(h, token, {
+      masterId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
+      version: v,
+      id: old.id,
+      confirmed: true,
+    }),
   ]);
   expect(race.filter((r) => r.ok)).toHaveLength(1);
   expect(race.find((r) => !r.ok)).toMatchObject({ code: "CONFLICT" });
@@ -324,6 +385,9 @@ it("Origin, ID другого мастера, произвольные поля 
   expect(
     await boundary.deleteException(h, token, {
       masterId: anotherId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: 0,
       id: item.id,
       confirmed: true,
@@ -332,6 +396,9 @@ it("Origin, ID другого мастера, произвольные поля 
   expect(
     await boundary.saveException(h, token, {
       masterId: anotherId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: 0,
       id: item.id,
       localDate: "2026-10-05",
@@ -342,18 +409,31 @@ it("Origin, ID другого мастера, произвольные поля 
   expect(
     await boundary.saveWeek(h, token, {
       masterId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: await version(),
       days: week(),
       isActive: false,
     }),
   ).toMatchObject({ code: "INVALID_INPUT" });
   expect(
-    await boundary.saveWeek(h, token, { masterId: randomUUID(), version: 0, days: week() }),
+    await boundary.saveWeek(h, token, {
+      masterId: randomUUID(),
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
+      version: 0,
+      days: week(),
+    }),
   ).toMatchObject({ code: "NOT_FOUND" });
   for (const localDate of ["2026-02-30", "2026-10-5"])
     expect(
       await boundary.saveException(h, token, {
         masterId,
+        expectedBusinessContext: businessContextHash(
+          await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+        ),
         version: await version(),
         id: null,
         localDate,
@@ -364,6 +444,9 @@ it("Origin, ID другого мастера, произвольные поля 
   expect(
     await boundary.deleteException(h, token, {
       masterId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: await version(),
       id: item.id,
       confirmed: false,
@@ -394,17 +477,35 @@ it.each(["saveWeek", "saveException", "deleteException"] as const)(
     await ready;
     const input =
       method === "saveWeek"
-        ? { masterId, version: 1, days: week() }
+        ? {
+            masterId,
+            expectedBusinessContext: businessContextHash(
+              await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+            ),
+            version: 1,
+            days: week(),
+          }
         : method === "saveException"
           ? {
               masterId,
+              expectedBusinessContext: businessContextHash(
+                await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+              ),
               version: 1,
               id: item.id,
               localDate: "2026-10-05",
               type: "DAY_OFF",
               intervals: [],
             }
-          : { masterId, version: 1, id: item.id, confirmed: true };
+          : {
+              masterId,
+              expectedBusinessContext: businessContextHash(
+                await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+              ),
+              version: 1,
+              id: item.id,
+              confirmed: true,
+            };
     const pending = boundary[method](h, token, input);
     try {
       await vi.waitFor(
@@ -431,6 +532,9 @@ it.each(["2026-03-29", "2026-10-25"])(
     await db.businessSettings.update({ where: { id: 1 }, data: { timezone: "Europe/Berlin" } });
     const input = {
       masterId,
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       version: 0,
       id: null,
       localDate,
@@ -462,6 +566,9 @@ it("публичные SPECIFIC/ANY до и после, устаревшая з�
   const input = {
     ...prepareBookingAttempt(),
     serviceId,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
     expectedServiceTerms: publicServiceTerms(s).termsHash,
     master: { type: "SPECIFIC", masterId },
     localDate: "2026-10-05",

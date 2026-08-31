@@ -1,3 +1,4 @@
+import { businessContextHash } from "../../src/modules/settings/server/context";
 import { publicServiceTerms } from "../../src/modules/catalog/server/service-terms";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedDemo, demoMasterIds, demoServiceIds } from "../../scripts/demo-data";
@@ -6,7 +7,6 @@ import { createPublicBoundary } from "../../src/server/public/boundary";
 import { createRateLimiter } from "../../src/server/public/security";
 import { createBookingService } from "../../src/modules/booking/server/booking-service";
 import { createClientAppointmentService } from "../../src/modules/appointments/server/client-appointment-service";
-import { createSchedulingAvailabilityService } from "../../src/modules/scheduling/server/availability-service";
 import { prepareBookingAttempt } from "../../src/modules/booking/server/booking-security";
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !new URL(url).pathname.startsWith("/zaprosto_test_"))
@@ -16,16 +16,17 @@ const other = createPrismaClient(url);
 const clock = { now: () => new Date("2026-09-01T00:00:00Z") };
 const booking = createBookingService(db, clock);
 const appointments = createClientAppointmentService(db, clock);
-const scheduling = createSchedulingAvailabilityService(db, clock);
 const boundary = createPublicBoundary({
   booking,
   appointments,
-  scheduling,
+  database: db,
+  clock,
   limit: createRateLimiter(db),
 });
 const headers = new Headers({ origin: "https://booking.example", "sec-fetch-site": "same-origin" });
 const keys: string[] = [];
 let expectedServiceTerms: string;
+let expectedBusinessContext: string;
 function input(any = false) {
   const pair = prepareBookingAttempt();
   keys.push(pair.idempotencyKey);
@@ -33,6 +34,7 @@ function input(any = false) {
     ...pair,
     serviceId: demoServiceIds[0],
     expectedServiceTerms,
+    expectedBusinessContext,
     master: any ? { type: "ANY" } : { type: "SPECIFIC", masterId: demoMasterIds[0] },
     localDate: "2026-09-02",
     startsAt: "2026-09-02T10:00:00+03:00",
@@ -43,6 +45,9 @@ function input(any = false) {
 beforeAll(async () => {
   vi.stubEnv("PUBLIC_ORIGIN", "https://booking.example");
   await seedDemo(db);
+  expectedBusinessContext = businessContextHash(
+    await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+  );
   expectedServiceTerms = publicServiceTerms(
     await db.service.findUniqueOrThrow({ where: { id: demoServiceIds[0] } }),
   ).termsHash;
@@ -156,7 +161,8 @@ describe("реальные публичные операции", () => {
     const failed = createPublicBoundary({
       booking,
       appointments,
-      scheduling,
+      database: db,
+      clock,
       limit: async () => {
         throw new Error("database down");
       },

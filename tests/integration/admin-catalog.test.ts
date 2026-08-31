@@ -1,3 +1,4 @@
+import { businessContextHash } from "../../src/modules/settings/server/context";
 import { publicServiceTerms } from "../../src/modules/catalog/server/service-terms";
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
@@ -290,6 +291,9 @@ async function bookedFixture() {
   const input = {
     ...prepareBookingAttempt(),
     serviceId: s.id,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
     expectedServiceTerms: publicServiceTerms(s).termsHash,
     master: { type: "SPECIFIC", masterId: m.id },
     localDate: "2026-10-05",
@@ -355,6 +359,9 @@ it.each(["service", "master", "assignment"])(
     const fresh = await booking.createBooking({
       ...input,
       ...prepareBookingAttempt(),
+      expectedBusinessContext: businessContextHash(
+        await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+      ),
       expectedServiceTerms: publicServiceTerms(
         await db.service.findUniqueOrThrow({ where: { id: s.id } }),
       ).termsHash,

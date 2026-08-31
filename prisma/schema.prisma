@@ -68,6 +68,7 @@ model MediaObject {
 }
 
 model BusinessSettings {
+  version            Int          @default(0)
   id                 Int          @id @default(1)
   businessName       String       @map("business_name")
   timezone           String       @default("Europe/Moscow")
