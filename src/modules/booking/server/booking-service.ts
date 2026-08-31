@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "../../../generated/prisma/client";
 import { isAppointmentOverlap, retryTransaction } from "../../../server/db/transaction-errors";
 import { confirmationSelect, toConfirmation } from "../../appointments/server/confirmation";
-import { SchedulingError } from "../../scheduling/domain/errors";
+import { publicServiceTerms } from "../../catalog/server/service-terms";
+import {
+  InactiveServiceError,
+  ServiceNotFoundError,
+  SchedulingError,
+} from "../../scheduling/domain/errors";
 import {
   createSchedulingAvailabilityService,
   systemClock,
@@ -14,6 +19,7 @@ import { hashBookingRequest, hashBookingToken, matchesBookingToken } from "./boo
 import type { BookingAvailability, BookingRejectionReason, CreateBookingResult } from "./types";
 
 class SlotUnavailable extends Error {}
+class ServiceTermsChanged extends Error {}
 
 function rejectionReason(error: unknown): BookingRejectionReason | null {
   if (!(error instanceof SchedulingError)) return null;
@@ -48,6 +54,7 @@ export class BookingService {
         }),
       );
     } catch (error) {
+      if (error instanceof ServiceTermsChanged) return this.freshTerms(input);
       if (error instanceof SlotUnavailable || isAppointmentOverlap(error)) {
         // The failed transaction has rolled back. Read availability in a new snapshot.
         return {
@@ -102,6 +109,12 @@ export class BookingService {
       };
     }
 
+    // Compare the exact terms shown by the client inside the creating transaction.
+    // Throw to roll back the attempt row as well as any subsequent writes.
+    const service = await this.activeService(tx, input.serviceId);
+    if (input.expectedServiceTerms !== publicServiceTerms(service).termsHash)
+      throw new ServiceTermsChanged();
+
     const scheduling = createSchedulingAvailabilityService(tx, this.clock);
     const query = {
       serviceId: input.serviceId,
@@ -120,10 +133,6 @@ export class BookingService {
     if (!checked.isAvailable) throw new SlotUnavailable();
 
     // Scheduling and snapshots see the same serializable database snapshot.
-    const service = await tx.service.findUniqueOrThrow({
-      where: { id: input.serviceId },
-      select: { name: true, priceKopecks: true, durationMinutes: true },
-    });
     const appointment = await tx.appointment.create({
       data: {
         bookingRequestId: requestId,
@@ -159,39 +168,74 @@ export class BookingService {
     };
   }
 
-  private async freshAvailability(input: CreateBookingInput): Promise<BookingAvailability> {
-    const scope = { serviceId: input.serviceId, localDate: input.localDate };
+  private async activeService(tx: Prisma.TransactionClient, serviceId: string) {
+    const service = await tx.service.findUnique({
+      where: { id: serviceId },
+      select: { id: true, name: true, priceKopecks: true, durationMinutes: true, isActive: true },
+    });
+    if (!service) throw new ServiceNotFoundError(serviceId);
+    if (!service.isActive) throw new InactiveServiceError(serviceId);
+    return service;
+  }
+
+  private async freshTerms(input: CreateBookingInput): Promise<CreateBookingResult> {
     try {
+      // The rejected create has rolled back. Terms and availability share a fresh snapshot.
       return await this.database.$transaction(
-        async (tx) => {
-          const scheduling = createSchedulingAvailabilityService(tx, this.clock);
-          if (input.master.type === "SPECIFIC") {
-            const result = await scheduling.getMasterAvailability({
-              ...scope,
-              masterId: input.master.masterId,
-            });
-            return {
-              ...scope,
-              timeZone: result.timeZone,
-              slots: result.slots.map((slot) => ({
-                ...slot,
-                masters: [{ id: result.master.id, name: result.master.name }],
-              })),
-            };
-          }
-          const result = await scheduling.getAnyMasterAvailability(scope);
-          return {
-            ...scope,
-            timeZone: result.timeZone,
-            slots: result.slots.map((slot) => ({
-              startsAt: slot.startsAt,
-              endsAt: slot.endsAt,
-              masters: slot.candidates.map(({ id, name }) => ({ id, name })),
-            })),
-          };
-        },
+        async (tx) => ({
+          ok: false as const,
+          code: "SERVICE_TERMS_CHANGED" as const,
+          service: publicServiceTerms(await this.activeService(tx, input.serviceId)),
+          availability: await this.availabilityInTransaction(tx, input),
+        }),
         { isolationLevel: "RepeatableRead", maxWait: 5_000, timeout: 10_000 },
       );
+    } catch (error) {
+      const reason = rejectionReason(error);
+      if (reason) return { ok: false, code: "REQUEST_REJECTED", reason };
+      throw error;
+    }
+  }
+
+  private async freshAvailability(input: CreateBookingInput): Promise<BookingAvailability> {
+    return this.database.$transaction((tx) => this.availabilityInTransaction(tx, input), {
+      isolationLevel: "RepeatableRead",
+      maxWait: 5_000,
+      timeout: 10_000,
+    });
+  }
+
+  private async availabilityInTransaction(
+    tx: Prisma.TransactionClient,
+    input: CreateBookingInput,
+  ): Promise<BookingAvailability> {
+    const scope = { serviceId: input.serviceId, localDate: input.localDate };
+    try {
+      const scheduling = createSchedulingAvailabilityService(tx, this.clock);
+      if (input.master.type === "SPECIFIC") {
+        const result = await scheduling.getMasterAvailability({
+          ...scope,
+          masterId: input.master.masterId,
+        });
+        return {
+          ...scope,
+          timeZone: result.timeZone,
+          slots: result.slots.map((slot) => ({
+            ...slot,
+            masters: [{ id: result.master.id, name: result.master.name }],
+          })),
+        };
+      }
+      const result = await scheduling.getAnyMasterAvailability(scope);
+      return {
+        ...scope,
+        timeZone: result.timeZone,
+        slots: result.slots.map((slot) => ({
+          startsAt: slot.startsAt,
+          endsAt: slot.endsAt,
+          masters: slot.candidates.map(({ id, name }) => ({ id, name })),
+        })),
+      };
     } catch (error) {
       const reason = rejectionReason(error);
       if (reason) return { ...scope, slots: [], unavailableReason: reason };

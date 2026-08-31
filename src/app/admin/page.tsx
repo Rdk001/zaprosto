@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { getAdminHome } from "../../server/admin";
 import { LogoutButton } from "../../components/admin/logout-button";
 
+import { AdminNavigation } from "../../components/admin/navigation";
+
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "Администратор — Запросто",
@@ -16,6 +18,7 @@ export default async function AdminPage() {
       <div className="admin-shell">
         {result.ok ? (
           <>
+            <AdminNavigation current="home" />
             <div className="appointment-heading">
               <p className="eyebrow">ЗАПРОСТО / АДМИНИСТРАТОР</p>
               <h1>Вы вошли</h1>
@@ -25,7 +28,10 @@ export default async function AdminPage() {
               <p className="admin-login-name">
                 Логин: <strong>{result.admin.login}</strong>
               </p>
-              <p className="hint">Управление данными бизнеса появится на следующем этапе.</p>
+              <p className="hint">
+                Управляйте услугами, мастерами и назначениями через разделы выше. Расписание и
+                управление записями появятся на следующих этапах.
+              </p>
               <div className="form-footer">
                 <LogoutButton />
               </div>

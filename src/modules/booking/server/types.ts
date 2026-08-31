@@ -1,3 +1,4 @@
+import type { PublicServiceTerms } from "../../catalog/server/service-terms";
 import type { AppointmentConfirmation } from "../../appointments/server/confirmation";
 import type { InputIssue } from "../domain/booking-input";
 
@@ -21,5 +22,11 @@ export type CreateBookingResult =
     }
   | { ok: false; code: "INVALID_INPUT"; issues: InputIssue[] }
   | { ok: false; code: "IDEMPOTENCY_CONFLICT" }
+  | {
+      ok: false;
+      code: "SERVICE_TERMS_CHANGED";
+      service: PublicServiceTerms;
+      availability: BookingAvailability;
+    }
   | { ok: false; code: "SLOT_UNAVAILABLE"; availability: BookingAvailability }
   | { ok: false; code: "REQUEST_REJECTED"; reason: BookingRejectionReason };

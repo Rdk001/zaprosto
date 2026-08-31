@@ -17,6 +17,9 @@ import { Confirmation } from "./confirmation";
 const steps = ["Услуга", "Мастер", "Дата и время", "Контакты"];
 type Slots = { key: string; values: string[]; error?: string };
 export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
+  // Freeze the displayed catalog until an explicit server rejection requires reconfirmation.
+  const [services, setServices] = useState(catalog.services);
+  const [changedServiceId, setChangedServiceId] = useState<string | null>(null);
   const [step, setStep] = useState(0);
   const [serviceId, setServiceId] = useState("");
   const [masterId, setMasterId] = useState("");
@@ -38,7 +41,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
     token: string;
   } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const service = catalog.services.find((s) => s.id === serviceId);
+  const service = services.find((s) => s.id === serviceId);
   const masterName =
     masterId === "ANY" ? "Любой мастер" : service?.masters.find((m) => m.id === masterId)?.name;
   const selectionKey = [serviceId, masterId, date, reload].join("|");
@@ -131,6 +134,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
           input = {
             ...prepared.attempt,
             serviceId,
+            expectedServiceTerms: service!.termsHash,
             master: masterId === "ANY" ? { type: "ANY" } : { type: "SPECIFIC", masterId },
             localDate: date,
             startsAt: slot,
@@ -167,6 +171,14 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
           );
           return;
         }
+        if (result.code === "SERVICE_TERMS_CHANGED") {
+          setServices((current) =>
+            current.map((row) =>
+              row.id === result.service.id ? { ...row, ...result.service } : row,
+            ),
+          );
+          setChangedServiceId(result.service.id);
+        }
         // Confirmed domain rejection: safe to discard the pair; keep contacts.
         sessionStorage.removeItem(ATTEMPT_STORAGE_KEY);
         setSaved(null);
@@ -180,9 +192,11 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
         setStep(2);
         setReload((v) => v + 1);
         setMessage(
-          result.code === "SLOT_UNAVAILABLE"
-            ? "Это время уже занято. Выберите другое окно — контакты сохранены."
-            : "Запись не создана. Проверьте услугу, мастера и дату, затем выберите доступное время.",
+          result.code === "SERVICE_TERMS_CHANGED"
+            ? "Условия услуги изменились. Запись не создана. Проверьте новое название, цену и длительность, выберите доступное время и подтвердите обновлённые условия."
+            : result.code === "SLOT_UNAVAILABLE"
+              ? "Это время уже занято. Выберите другое окно — контакты сохранены."
+              : "Запись не создана. Проверьте услугу, мастера и дату, затем выберите доступное время.",
         );
       } catch {
         setMessage(
@@ -199,6 +213,7 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
       sessionStorage.removeItem(ATTEMPT_STORAGE_KEY);
       setSaved(null);
       setSuccess(null);
+      setChangedServiceId(null);
       setStep(0);
       setReview(false);
       setSlot("");
@@ -341,13 +356,20 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
               {message}
             </p>
           )}
+          {changedServiceId === serviceId && service && !review && (
+            <p className="notice" aria-label="Обновлённые условия услуги">
+              <strong>{service.name}</strong>
+              <br />
+              {money(service.priceKopecks)} · {service.durationMinutes} мин
+            </p>
+          )}
           {step === 0 && (
             <>
-              {!catalog.services.length ? (
+              {!services.length ? (
                 <p className="empty">Пока нет доступных услуг. Попробуйте зайти позже.</p>
               ) : (
                 <div className="choices">
-                  {catalog.services.map((s) => (
+                  {services.map((s) => (
                     <button
                       type="button"
                       className={"choice service-choice " + (serviceId === s.id ? "selected" : "")}
@@ -581,6 +603,10 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
                   <dd>{dateTime(slot, catalog.timeZone)}</dd>
                 </div>
                 <div>
+                  <dt>Длительность</dt>
+                  <dd>{service?.durationMinutes} мин</dd>
+                </div>
+                <div>
                   <dt>Стоимость</dt>
                   <dd>{money(service?.priceKopecks ?? 0)}</dd>
                 </div>
@@ -602,7 +628,11 @@ export function BookingFlow({ catalog }: { catalog: PublicCatalog }) {
                   Изменить контакты
                 </button>
                 <button className="primary" disabled={busy} onClick={() => submit()}>
-                  {busy ? "Создаём запись…" : "Подтвердить запись"}
+                  {busy
+                    ? "Создаём запись…"
+                    : changedServiceId === serviceId
+                      ? "Подтвердить обновлённые условия"
+                      : "Подтвердить запись"}
                 </button>
               </div>
             </>

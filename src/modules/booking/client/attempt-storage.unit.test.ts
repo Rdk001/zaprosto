@@ -63,3 +63,25 @@ describe("жизненный цикл попытки", () => {
     expect(() => writeAttempt(s, { state: "pending", input, savedAt: 100 })).toThrow();
   });
 });
+
+it("новый отпечаток сохраняется как часть исходной попытки; старый формат не дополняется", () => {
+  for (const payload of [input, { ...input, expectedServiceTerms: "a".repeat(64) }]) {
+    const s = storage();
+    const pending: SavedAttempt = { state: "pending", savedAt: 100, input: payload };
+    writeAttempt(s, pending);
+    expect(readAttempt(s, 200)).toEqual(pending);
+    expect(JSON.parse(s.getItem(ATTEMPT_STORAGE_KEY)!).input).toEqual(payload);
+  }
+});
+it("невалидный отпечаток в сохранённой попытке сохраняет блокировку неизвестного исхода", () => {
+  const s = storage();
+  s.setItem(
+    ATTEMPT_STORAGE_KEY,
+    JSON.stringify({
+      state: "pending",
+      savedAt: 100,
+      input: { ...input, expectedServiceTerms: "" },
+    }),
+  );
+  expect(readAttempt(s, 200)).toEqual({ state: "damaged" });
+});

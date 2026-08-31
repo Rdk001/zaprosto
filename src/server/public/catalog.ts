@@ -1,4 +1,5 @@
 import "server-only";
+import { publicServiceTerms } from "../../modules/catalog/server/service-terms";
 import { Temporal } from "temporal-polyfill";
 import { prisma } from "../db/prisma";
 import {
@@ -41,7 +42,7 @@ export async function getPublicCatalog() {
     timeZone: settings.timezone,
     dates,
     services: services.map((service) => ({
-      ...service,
+      ...publicServiceTerms(service),
       masters: service.masters.map((row) => row.master),
     })),
   };

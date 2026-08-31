@@ -81,6 +81,7 @@ model BusinessSettings {
 }
 
 model Service {
+  version         Int      @default(0)
   id              String   @id @default(uuid()) @db.Uuid
   name            String
   priceKopecks    Int      @map("price_kopecks")
@@ -98,6 +99,7 @@ model Service {
 }
 
 model Master {
+  version      Int          @default(0)
   id           String       @id @default(uuid()) @db.Uuid
   name         String
   description  String?

@@ -126,3 +126,21 @@ describe("booking input and attempt credentials", () => {
     expect(issues).not.toContain("secret-invalid-token");
   });
 });
+
+it("согласованные условия входят в hash, а booking-v1 остаётся байтово совместимым", () => {
+  const legacy = createBookingSchema.parse({
+    ...validInput(),
+    serviceId: "de000000-0000-4000-8000-000000000001",
+    master: { type: "ANY" },
+    clientName: "Test",
+    clientPhone: "+79990000000",
+  });
+  expect(hashBookingRequest(legacy)).toBe(
+    "914b9327b5895bcd84e44777d0c0df368e043afb762a37a32adb8faf608deaa3",
+  );
+  const current = { ...legacy, expectedServiceTerms: "a".repeat(64) };
+  expect(hashBookingRequest(current)).not.toBe(hashBookingRequest(legacy));
+  expect(hashBookingRequest({ ...current, expectedServiceTerms: "b".repeat(64) })).not.toBe(
+    hashBookingRequest(current),
+  );
+});

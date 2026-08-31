@@ -1,3 +1,4 @@
+import { publicServiceTerms } from "../../src/modules/catalog/server/service-terms";
 import { randomUUID } from "node:crypto";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -68,6 +69,7 @@ function inputFor(data: Awaited<ReturnType<typeof fixture>>, any = false) {
   return {
     ...attempt,
     serviceId: data.service.id,
+    expectedServiceTerms: publicServiceTerms(data.service).termsHash,
     master: any
       ? { type: "ANY" as const }
       : { type: "SPECIFIC" as const, masterId: data.masters[0].id },

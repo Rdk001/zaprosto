@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { PrismaClient } from "../../../generated/prisma/client";
+import type { Prisma, PrismaClient } from "../../../generated/prisma/client";
 import { credentialsSchema, LOCK_MINUTES, MAX_FAILURES, SESSION_SECONDS } from "../policy";
 import { verifyPassword } from "./password";
 
@@ -58,15 +58,7 @@ export function createAuthService(db: PrismaClient) {
       });
     },
     async getAdmin(token: unknown): Promise<AdminIdentity | null> {
-      if (!validSessionToken(token)) return null;
-      // No caching; DB time and active account are checked at every data boundary.
-      const rows = await db.$queryRaw<AdminIdentity[]>`
-        SELECT a.id, a.login FROM admin_sessions s
-        JOIN admin_users a ON a.id = s.admin_id
-        WHERE s.token_hash = ${hashSessionToken(token)}
-          AND s.revoked_at IS NULL AND s.expires_at > clock_timestamp() AND a.is_active = true
-        LIMIT 1`;
-      return rows[0] ?? null;
+      return getActiveAdmin(db, token);
     },
     async logout(token: unknown) {
       // Idempotent even for inactive/expired sessions. Never revokes another session.
@@ -77,3 +69,18 @@ export function createAuthService(db: PrismaClient) {
   };
 }
 export type AuthService = ReturnType<typeof createAuthService>;
+
+export async function getActiveAdmin(
+  db: Pick<Prisma.TransactionClient, "$queryRaw">,
+  token: unknown,
+): Promise<AdminIdentity | null> {
+  if (!validSessionToken(token)) return null;
+  // No caching; DB time and active account are checked at every data boundary.
+  const rows = await db.$queryRaw<AdminIdentity[]>`
+        SELECT a.id, a.login FROM admin_sessions s
+        JOIN admin_users a ON a.id = s.admin_id
+        WHERE s.token_hash = ${hashSessionToken(token)}
+          AND s.revoked_at IS NULL AND s.expires_at > clock_timestamp() AND a.is_active = true
+        LIMIT 1`;
+  return rows[0] ?? null;
+}

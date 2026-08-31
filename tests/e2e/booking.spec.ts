@@ -1,3 +1,4 @@
+import { publicServiceTerms } from "../../src/modules/catalog/server/service-terms";
 import { expect, test, type Page } from "@playwright/test";
 import { demoMasterIds, demoServiceIds } from "../../scripts/demo-data";
 import { createPrismaClient } from "../../src/server/db/create-prisma-client";
@@ -107,6 +108,9 @@ test("конфликт сбрасывает слот и сохраняет ко�
   const competitor = await createBookingService(db).createBooking({
     ...prepareBookingAttempt(),
     serviceId: demoServiceIds[0],
+    expectedServiceTerms: publicServiceTerms(
+      await db.service.findUniqueOrThrow({ where: { id: demoServiceIds[0] } }),
+    ).termsHash,
     master: { type: "SPECIFIC", masterId: demoMasterIds[0] },
     localDate,
     startsAt: start,

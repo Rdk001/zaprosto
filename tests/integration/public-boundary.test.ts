@@ -1,3 +1,4 @@
+import { publicServiceTerms } from "../../src/modules/catalog/server/service-terms";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedDemo, demoMasterIds, demoServiceIds } from "../../scripts/demo-data";
 import { createPrismaClient } from "../../src/server/db/create-prisma-client";
@@ -24,12 +25,14 @@ const boundary = createPublicBoundary({
 });
 const headers = new Headers({ origin: "https://booking.example", "sec-fetch-site": "same-origin" });
 const keys: string[] = [];
+let expectedServiceTerms: string;
 function input(any = false) {
   const pair = prepareBookingAttempt();
   keys.push(pair.idempotencyKey);
   return {
     ...pair,
     serviceId: demoServiceIds[0],
+    expectedServiceTerms,
     master: any ? { type: "ANY" } : { type: "SPECIFIC", masterId: demoMasterIds[0] },
     localDate: "2026-09-02",
     startsAt: "2026-09-02T10:00:00+03:00",
@@ -40,6 +43,9 @@ function input(any = false) {
 beforeAll(async () => {
   vi.stubEnv("PUBLIC_ORIGIN", "https://booking.example");
   await seedDemo(db);
+  expectedServiceTerms = publicServiceTerms(
+    await db.service.findUniqueOrThrow({ where: { id: demoServiceIds[0] } }),
+  ).termsHash;
 });
 beforeEach(async () => {
   await db.publicRateLimit.deleteMany();

@@ -28,6 +28,11 @@ export const createBookingSchema = z.strictObject({
   idempotencyKey: uuid,
   cancellationToken: bookingTokenSchema,
   serviceId: uuid,
+  // Optional only for replay of pre-terms attempts; new bookings require a match in the transaction.
+  expectedServiceTerms: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
   master: z.discriminatedUnion("type", [
     z.strictObject({ type: z.literal("SPECIFIC"), masterId: uuid }),
     z.strictObject({ type: z.literal("ANY") }),
