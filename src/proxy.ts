@@ -28,4 +28,4 @@ export function proxy(request: NextRequest) {
   response.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   return response;
 }
-export const config = { matcher: ["/", "/appointment", "/api/availability"] };
+export const config = { matcher: ["/", "/appointment", "/api/availability", "/admin/:path*"] };

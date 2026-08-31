@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import type { PrismaClient } from "../../generated/prisma/client";
 
-export type PublicOperation = "prepare" | "create" | "lookup" | "cancel" | "availability";
+export type PublicOperation =
+  "prepare" | "create" | "lookup" | "cancel" | "availability" | "adminLogin";
 export const limits: Record<PublicOperation, { client: number; global: number }> = {
+  adminLogin: { client: 10, global: 60 },
   prepare: { client: 20, global: 200 },
   create: { client: 12, global: 120 },
   lookup: { client: 60, global: 600 },

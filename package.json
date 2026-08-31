@@ -28,11 +28,14 @@
     "prisma:migrate:status": "prisma migrate status",
     "prisma:studio": "prisma studio",
     "test:postgres": "node --env-file-if-exists=.env scripts/test-postgres.mjs",
-    "demo:seed": "node --env-file-if-exists=.env --import tsx scripts/seed-demo.ts"
+    "demo:seed": "node --env-file-if-exists=.env --import tsx scripts/seed-demo.ts",
+    "admin:create": "node --env-file-if-exists=.env --import tsx scripts/admin.ts create",
+    "admin:reset": "node --env-file-if-exists=.env --import tsx scripts/admin.ts reset"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
+    "argon2": "0.45.1",
     "next": "16.3.3",
     "pg": "8.23.0",
     "react": "19.2.8",

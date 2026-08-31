@@ -830,3 +830,16 @@ h3 {
     transition: none !important;
   }
 }
+
+.admin-shell {
+  max-width: 540px;
+  margin: auto;
+}
+.admin-login-name {
+  overflow-wrap: anywhere;
+  margin-bottom: 16px;
+}
+
+.admin-form > .hint {
+  margin-top: 16px;
+}
