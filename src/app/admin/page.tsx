@@ -29,8 +29,8 @@ export default async function AdminPage() {
                 Логин: <strong>{result.admin.login}</strong>
               </p>
               <p className="hint">
-                Управляйте услугами, мастерами, назначениями и расписанием через разделы выше.
-                Управление записями появится на следующих этапах.
+                Управляйте каталогом, расписанием, настройками времени и статусами записей через
+                разделы выше.
               </p>
               <div className="form-footer">
                 <LogoutButton />

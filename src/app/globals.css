@@ -1082,3 +1082,93 @@ h3 {
 .settings-shell .field + .hint {
   margin-top: 10px;
 }
+
+/* Appointment journal: stacked cards on narrow screens. */
+.journal-filter {
+  display: grid;
+  gap: 1rem;
+  align-items: end;
+}
+.journal-filter .field,
+.journal-filter select {
+  min-width: 0;
+  width: 100%;
+}
+.journal-list {
+  display: grid;
+  gap: 1rem;
+  list-style: none;
+  padding: 0;
+}
+.journal-item {
+  display: grid;
+  gap: 1rem;
+  overflow-wrap: anywhere;
+}
+.journal-item h2 {
+  font-size: 1.2rem;
+  margin: 0;
+}
+.journal-item p {
+  margin: 0.35rem 0;
+}
+.journal-time {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+.appointment-detail-shell {
+  display: grid;
+  gap: 1.25rem;
+}
+.appointment-detail-shell .appointment-heading {
+  margin: 0;
+}
+.appointment-facts {
+  display: grid;
+  gap: 1rem;
+}
+.appointment-facts dt {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.appointment-facts dd {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+.appointment-cancel {
+  display: grid;
+  gap: 1rem;
+}
+.appointment-cancel p {
+  margin: 0;
+}
+.status-history {
+  display: grid;
+  gap: 1.25rem;
+  padding-left: 1.25rem;
+}
+.status-history li {
+  overflow-wrap: anywhere;
+}
+.saved-reason {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (min-width: 720px) {
+  .journal-filter {
+    grid-template-columns: 1fr 1fr;
+  }
+  .journal-item {
+    grid-template-columns: 12rem minmax(0, 1fr);
+  }
+  .appointment-facts {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.journal-shell > .hint {
+  margin: 1rem 0;
+}
+.appointment-detail-shell .catalog-fields > .hint {
+  margin: 0.75rem 0;
+}

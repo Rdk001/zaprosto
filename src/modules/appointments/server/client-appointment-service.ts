@@ -51,7 +51,13 @@ export class ClientAppointmentService {
           // Only the winner changes the status and appends history in this transaction.
           const changed = await tx.appointment.updateMany({
             where: { cancellationTokenHash, status: "SCHEDULED" },
-            data: { status: "CANCELLED", cancelledBy: "CLIENT", cancelledAt, cancellationReason },
+            data: {
+              status: "CANCELLED",
+              cancelledBy: "CLIENT",
+              cancelledAt,
+              cancellationReason,
+              version: { increment: 1 },
+            },
           });
           const appointment = await tx.appointment.findUnique({
             where: { cancellationTokenHash },
