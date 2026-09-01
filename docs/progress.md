@@ -12,6 +12,8 @@
 
 **05.5 — журнал записей и управление статусами выполнен и принят пользователем после исправления замечания независимой проверки: 454 unit/integration и 103 E2E успешно.** Исходный коммит b701bb732682d8e638e19e506610e6daa350c2f2. Актуальная точка продолжения 05.5 — в конце документа; следующий этап не начат.
 
+**05.6 — ручное создание записи администратором принято после независимой проверки.** Исходный HEAD и origin/main: `f32f86d0e10156780c6cbd5aa0c0f9923718d4f6`; исходное дерево было чистым. Схема/миграции и зависимости не менялись, ADR-0011 переведён в Accepted. Результаты полного последовательного прогона и разрешённая фиксация приведены в разделе 05.6 ниже; этап 05.7 не начат.
+
 ### Выполнено
 
 - Зафиксирована подтверждённая концепция продукта «Запросто».
@@ -263,6 +265,7 @@
 | 05.3 — Расписание, перерывы и исключения           | Выполнен, принят | Защищённый редактор, атомарные операции и общий Master.version; 300 Vitest и 65 E2E. Независимая проверка пройдена.                                                    |
 | 05.4 — Настройки времени и горизонта               | Выполнен, принят | Версия настроек, атомарность, контекст расписания/записи, совместимость replay; независимая проверка: 377 unit/integration, 85 E2E. Результат принят пользователем.    |
 | 05.5 — Журнал записей и управление статусами       | Выполнен, принят | Защищённые журнал/карточка, статусы и история, версии/ABA, совместимость клиентской отмены/replay; исправление независимого замечания, 454 unit/integration и 103 E2E. |
+| 05.6 — Ручное создание записи                      | Принят           | ADMIN/SPECIFIC/ANY, общий booking engine, строгая идемпотентность, fragment-ссылка, recovery потерянного ответа, без Telegram/outbox.                                  |
 
 ## Изменённые файлы 05.1
 
@@ -540,3 +543,88 @@
 ### Точка продолжения 05.5
 
 Этап 05.5 принят пользователем после исправления замечания независимой проверки: 454 unit/integration и 103 E2E успешны, ADR-0010 — Accepted. Разрешены фиксация ровно 30 перечисленных файлов коммитом `feat: add admin appointment journal and status management` и обычный push в origin/main без force. Следующий этап не начинать. Рабочую БД не изменять; миграцию к ней не применять автоматически. Ограничения и открытый npm audit сохранены.
+
+## Этап 05.6 — ручное создание записи администратором (2026-09-01)
+
+Исходный HEAD и origin/main: `f32f86d0e10156780c6cbd5aa0c0f9923718d4f6`, ветка `main`, рабочее дерево было чистым. Выполняется только 05.6; commit/push запрещены до независимой проверки. Prisma-схема и миграции не меняются, рабочая БД и Docker volumes не используются для тестов.
+
+### Реализовано
+
+- Защищённый `/admin/appointments/new` и переход «Создать запись» из журнала. Четыре mobile-first шага: активная услуга/назначенный мастер или ANY, локальная дата/актуальные окна, имя/существующая нормализация российского телефона, итог и реальный checkbox подтверждения.
+- Начальная форма и availability читаются в RepeatableRead с начальной авторизацией; транзакция завершается до отдельной финальной проверки доступа, сохраняя исправление исчерпания пула 05.5. Возвращаются только активные услуги и активные подходящие мастера из согласованного снимка.
+- Публичный BookingService и новый AdminBookingService используют общий внутренний транзакционный engine, а не публичный HTTP boundary. Сохранены service terms, business context, утверждённые selectAnyMaster/checkMasterInterval, Serializable retry и PostgreSQL exclusion constraint.
+- Запись сохраняется как SCHEDULED/source=ADMIN/masterSelection=SPECIFIC или ANY, с обязательным BookingRequest, snapshots услуги и атомарной начальной историей previousStatus=null/newStatus=SCHEDULED/changedBy=ADMIN/changedByAdminId из проверенной сессии.
+- Сессия проверяется до операции, через FOR SHARE после значимых ожиданий и ещё раз boundary после транзакции. Потеря доступа откатывает либо подавляет результат без контактов и токена; конкурентный отзыв во время exclusion-ожидания покрыт реальной PostgreSQL-регрессией.
+- Отдельный strict DTO требует confirmed=true, UUID, 256-битный cancellation token и отпечатки условий/контекста; лишние и серверные поля отклоняются. Admin fingerprint стабилен после нормализации и связывает все предметные поля; неверный payload или токен с прежним ключом даёт IDEMPOTENCY_CONFLICT.
+- До первого create точный исходный payload сохраняется в sessionStorage вкладки. Неизвестный результат блокирует новую пару и разрешает только replay исходного запроса. Через 30 минут контакты удаляются, marker токена сохраняет возможность сверки; localStorage/cookie не используются.
+- В БД хранится только cancellationTokenHash. Raw-токен возвращается только при подтверждённом успехе/replay, не включается в ошибки, query/path/server HTML/RSC или логи. Абсолютная ссылка формируется браузером как текущий origin + `/appointment#TOKEN`.
+- Успешный экран показывает запись, безопасный plain-text с услугой, мастером, локальными датой/временем, ссылкой и предупреждением; отдельные кнопки копируют текст/ссылку, Clipboard fallback выделяет поле вручную, есть переход в карточку. Клиентская ссылка просматривает и отменяет ADMIN-запись; отмена освобождает слот и не меняет source.
+- TelegramLink, NotificationOutbox, Telegram/SMS, редактирование, перенос, напоминания, медиа, deployment и 05.7 не добавлены. Новых зависимостей, календарной библиотеки, Prisma-изменений и миграций нет.
+- Добавлены [инструкция](admin-appointment-creation.md) и [ADR-0011](decisions/0011-admin-manual-appointment-creation.md) со статусом Accepted после независимой приёмки; обновлены архитектура, roadmap, README и документация журнала.
+
+### Завершённые целевые проверки до полного прогона
+
+- Ранний typecheck и production build web + worker завершились успешно; build и typecheck не выполнялись одновременно.
+- Новые unit: **19/19 успешно** — strict DTO, телефон +7/8 и нормализация, лишние поля, SPECIFIC/ANY, fingerprint, безопасный confirmation text и sessionStorage lifecycle.
+- Новые integration в отдельной случайной PostgreSQL БД: **16/16 успешно**. Проверены ADMIN/history/snapshots, SPECIFIC/ANY, активный каталог, расписание/terms/context, Origin/DTO, replay/конфликты, concurrent exclusion, сессии и отзыв во время ожидания, отсутствие raw-токена/Telegram/outbox, клиентский просмотр/отмена и освобождение слота.
+- Новые E2E на production-сборке в отдельной случайной БД: **10/10 успешно**. Проверены полные SPECIFIC/ANY, телефон/empty/stale/terms, double click, неизвестный исход до/после COMMIT, safe replay, copy/fallback, карточка/клиентская отмена, прямые Actions, 360/390/1440, клавиатура и фокус.
+- PNG формы 360 и 1440 px прочитаны и просмотрены: переполнения, обрезания, наложения и недоступного управления не обнаружено. Снимки находятся только в игнорируемом `test-results/`.
+- Эти целевые результаты не заменяют обязательный полный последовательный прогон. После восстановления проверено: незавершённых Node/Next/Playwright/runner процессов нет, порт 3108 свободен, временных `zaprosto_test_*` БД нет.
+
+### Полный обязательный прогон
+
+Последовательность 1–8 завершена полностью; build и typecheck не пересекались:
+
+1. `rtk npm run format:check` — успешно, все файлы соответствуют Prettier.
+2. `rtk npm run lint` — итоговый прогон успешно, 0 ошибок и предупреждений. Первый незасчитанный запуск обнаружил три ошибки: два правила полной навигации и синхронный setState в effect. Добавлены локальные объяснённые исключения по принятой nonce-CSP политике, лишний setState удалён; бизнес-логика не менялась.
+3. `rtk npm run build` — успешно: Prisma Client 7.10.0, Next.js 16.3.3 production build, маршрут `/admin/appointments/new` и worker TypeScript.
+4. `rtk npm run typecheck` — отдельно после завершения build, успешно.
+5. Полный unit/integration runner — **33 файла, 489/489 тестов успешно**, 39,87 с; случайная БД `zaprosto_test_c30c3dbf810342018098bd0772376c0b`, все 7 миграций применены только к ней, runner завершился с code 0.
+6. Полный Playwright/Chromium — **113/113 E2E успешно**, 3,1 мин; production-сборка, случайная БД `zaprosto_test_ecf67ff1530744f3ac78d1bda6155e6e`, runner завершился с code 0.
+7. `rtk git diff --check` — успешно, вывода об ошибках нет.
+8. `rtk docker compose config` — успешно; конфигурация db/web/worker валидна, сервисы и volumes командой не изменялись.
+
+Полный E2E включает все 10 новых сценариев 05.6 и прежние 103 регрессии. Ожидаемые server-side сообщения об отклонённом чужом Origin, предупреждение pg concurrent client.query и предупреждение Next.js для `next start` при standalone не привели к падению. Никакие частичные или первоначально неуспешные прогоны не засчитаны.
+
+После полного runner повторный read-only контроль подтвердил: **0 временных `zaprosto_test_*` БД**, порт **3108 свободен**, проектных Node/Next/Playwright/test-runner процессов нет. Рабочая БД только опрашивалась по системному каталогу, данные/миграции/volumes не изменялись. В 29 файлах diff нет явных секретов; `package.json`, `package-lock.json`, Prisma schema/migrations, generated-файлы и `test-results` в diff отсутствуют.
+
+### Изменённые файлы 05.6
+
+29 файлов, включая этот журнал; generated/test artifacts не входят:
+
+- `README.md`
+- `docs/admin-appointment-creation.md`
+- `docs/admin-appointments.md`
+- `docs/architecture.md`
+- `docs/decisions/0011-admin-manual-appointment-creation.md`
+- `docs/progress.md`
+- `docs/roadmap.md`
+- `src/app/admin/appointment-actions.ts`
+- `src/app/admin/appointments/new/page.tsx`
+- `src/app/admin/appointments/page.tsx`
+- `src/app/globals.css`
+- `src/components/admin/appointment-create-flow.tsx`
+- `src/modules/appointments/domain/admin-confirmation.ts`
+- `src/modules/appointments/domain/admin-confirmation.unit.test.ts`
+- `src/modules/appointments/domain/admin-create-input.ts`
+- `src/modules/appointments/domain/admin-create-input.unit.test.ts`
+- `src/modules/auth/server/auth-service.ts`
+- `src/modules/booking/client/admin-attempt-storage.ts`
+- `src/modules/booking/client/admin-attempt-storage.unit.test.ts`
+- `src/modules/booking/domain/booking-input.ts`
+- `src/modules/booking/server/admin-booking-service.ts`
+- `src/modules/booking/server/booking-catalog.ts`
+- `src/modules/booking/server/booking-engine.ts`
+- `src/modules/booking/server/booking-service.ts`
+- `src/server/admin/appointment-creation-boundary.ts`
+- `src/server/admin/appointments.ts`
+- `src/server/public/catalog.ts`
+- `tests/e2e/admin-appointment-create.spec.ts`
+- `tests/integration/admin-appointment-creation.test.ts`
+
+### Ограничения и точка продолжения
+
+- Проверен Chromium в локальном HTTP-окружении. Firefox/WebKit, физические устройства, screen reader, production HTTPS/reverse proxy/CDN и внешний аудит безопасности не проверялись.
+- Существующие предупреждения pg о concurrent client.query и Next.js next start при output=standalone не исправляются этим этапом. Прежние 3 high npm audit в цепочке Prisma остаются открытыми; audit, force fix и зависимости не запускались/не менялись.
+- sessionStorage — вкладочный recovery: после TTL контакты намеренно удаляются. Уже показанные сведения не стираются после отзыва; отзыв непосредственно после последней успешной проверки не отменяет уже завершённый COMMIT, но boundary не выдаёт его результат и исходная пара остаётся для безопасной сверки.
+- Этап 05.6 принят после независимой проверки: production build, typecheck, lint, format:check, git diff --check и `docker compose config` успешны; полный unit/integration runner — **489/489**, полный E2E Chromium — **113/113**; интерфейс на 360 и 1440 px просмотрен. Временных тестовых БД и процессов нет, рабочая БД, Prisma-схема, миграции, Docker volumes и зависимости не изменялись. ADR-0011 переведён в Accepted. Разрешены один коммит `feat: add admin manual appointment creation` ровно из 29 перечисленных файлов и обычный push в origin/main без force. Следующий этап 05.7 не начинать.

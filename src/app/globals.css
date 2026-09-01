@@ -1172,3 +1172,36 @@ h3 {
 .appointment-detail-shell .catalog-fields > .hint {
   margin: 0.75rem 0;
 }
+
+.journal-create-link {
+  margin: -0.5rem 0 1.5rem;
+}
+.admin-create-shell {
+  display: grid;
+  gap: 1.25rem;
+}
+.admin-create-shell .admin-nav {
+  margin-bottom: 0;
+}
+.admin-create-flow,
+.admin-create-success {
+  display: grid;
+  gap: 1.25rem;
+}
+.admin-create-flow .appointment-heading,
+.admin-create-success .appointment-heading {
+  margin: 0;
+}
+.admin-create-success .secondary {
+  margin-top: 0.75rem;
+}
+.admin-create-success textarea,
+.admin-create-success input {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 560px) {
+  .admin-create-steps {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem 0;
+  }
+}

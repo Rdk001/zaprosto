@@ -84,3 +84,23 @@ export async function getActiveAdmin(
         LIMIT 1`;
   return rows[0] ?? null;
 }
+
+/**
+ * Recheck access after a Serializable transaction has waited on booking locks.
+ * FOR SHARE detects a concurrent session/account update with a serialization
+ * failure and keeps a successful authorization stable through COMMIT.
+ */
+export async function getActiveAdminForShare(
+  db: Pick<Prisma.TransactionClient, "$queryRaw">,
+  token: unknown,
+): Promise<AdminIdentity | null> {
+  if (!validSessionToken(token)) return null;
+  const rows = await db.$queryRaw<AdminIdentity[]>`
+        SELECT a.id, a.login FROM admin_sessions s
+        JOIN admin_users a ON a.id = s.admin_id
+        WHERE s.token_hash = ${hashSessionToken(token)}
+          AND s.revoked_at IS NULL AND s.expires_at > clock_timestamp() AND a.is_active = true
+        LIMIT 1
+        FOR SHARE OF s, a`;
+  return rows[0] ?? null;
+}

@@ -1,48 +1,59 @@
 import type { PrismaClient } from "../../../generated/prisma/client";
 import { isAppointmentOverlap, retryTransaction } from "../../../server/db/transaction-errors";
+import { getActiveAdmin, getActiveAdminForShare } from "../../auth/server/auth-service";
+import {
+  adminCreateAppointmentSchema,
+  adminCreateInputIssues,
+  hashAdminAppointmentRequest,
+} from "../../appointments/domain/admin-create-input";
 import { publicServiceTerms } from "../../catalog/server/service-terms";
 import { systemClock, type Clock } from "../../scheduling/server/availability-service";
 import { readTimeContext } from "../../settings/server/context";
-import { createBookingSchema, inputIssues } from "../domain/booking-input";
 import {
   activeBookingService,
   bookingAvailabilityInTransaction,
   bookingRejectionReason,
+  BookingAuthorizationLost,
   BusinessContextChanged,
   createBookingInTransaction,
   ServiceTermsChanged,
   SlotUnavailable,
 } from "./booking-engine";
-import { hashBookingRequest } from "./booking-security";
 import type { BookingAvailability, CreateBookingResult } from "./types";
 
-export class BookingService {
+export type AdminBookingResult = CreateBookingResult | { ok: false; code: "UNAUTHORIZED" };
+
+export class AdminBookingService {
   constructor(
     private readonly database: PrismaClient,
     private readonly clock: Clock = systemClock,
   ) {}
 
-  async createBooking(rawInput: unknown): Promise<CreateBookingResult> {
-    const parsed = createBookingSchema.safeParse(rawInput);
+  async createBooking(token: unknown, rawInput: unknown): Promise<AdminBookingResult> {
+    const parsed = adminCreateAppointmentSchema.safeParse(rawInput);
     if (!parsed.success)
-      return { ok: false, code: "INVALID_INPUT", issues: inputIssues(parsed.error) };
+      return { ok: false, code: "INVALID_INPUT", issues: adminCreateInputIssues(parsed.error) };
     const input = parsed.data;
     try {
       return await retryTransaction(() =>
         this.database.$transaction(
-          (tx) =>
-            createBookingInTransaction({
+          async (tx) => {
+            if (!(await getActiveAdmin(tx, token))) throw new BookingAuthorizationLost();
+            return createBookingInTransaction({
               tx,
               booking: input,
-              requestHash: hashBookingRequest(input),
-              source: "ONLINE",
-              changedBy: "CLIENT",
+              requestHash: hashAdminAppointmentRequest(input),
+              source: "ADMIN",
+              changedBy: "ADMIN",
               clock: this.clock,
-            }),
+              verifyAdminAfterWait: () => getActiveAdminForShare(tx, token),
+            });
+          },
           { isolationLevel: "Serializable", maxWait: 5_000, timeout: 10_000 },
         ),
       );
     } catch (error) {
+      if (error instanceof BookingAuthorizationLost) return { ok: false, code: "UNAUTHORIZED" };
       if (error instanceof BusinessContextChanged)
         return this.database.$transaction(
           async (tx) => ({
@@ -65,7 +76,7 @@ export class BookingService {
     }
   }
 
-  private async freshTerms(input: ReturnType<typeof createBookingSchema.parse>) {
+  private async freshTerms(input: ReturnType<typeof adminCreateAppointmentSchema.parse>) {
     try {
       return await this.database.$transaction(
         async (tx) => ({
@@ -84,7 +95,7 @@ export class BookingService {
   }
 
   private async freshAvailability(
-    input: ReturnType<typeof createBookingSchema.parse>,
+    input: ReturnType<typeof adminCreateAppointmentSchema.parse>,
   ): Promise<BookingAvailability> {
     return this.database.$transaction(
       (tx) => bookingAvailabilityInTransaction(tx, input, this.clock),
@@ -93,6 +104,6 @@ export class BookingService {
   }
 }
 
-export function createBookingService(database: PrismaClient, clock: Clock = systemClock) {
-  return new BookingService(database, clock);
+export function createAdminBookingService(database: PrismaClient, clock: Clock = systemClock) {
+  return new AdminBookingService(database, clock);
 }

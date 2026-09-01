@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-html-link-for-pages -- Full document navigation preserves nonce-CSP (ADR-0005). */
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { getAdminAppointments } from "../../../server/admin/appointments";
@@ -34,6 +35,11 @@ export default async function AppointmentsPage({
             начала.
           </p>
         </div>
+        <p className="journal-create-link">
+          <a className="primary" href="/admin/appointments/new">
+            Создать запись
+          </a>
+        </p>
         <form method="get" action="/admin/appointments" className="journal-filter panel">
           {q.mastersAfter && <input type="hidden" name="mastersAfter" value={q.mastersAfter} />}
           <label className="field">

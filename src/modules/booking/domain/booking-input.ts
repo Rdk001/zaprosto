@@ -2,12 +2,12 @@ import { z } from "zod";
 
 import { normalizeRussianPhone } from "./phone";
 
-const uuid = z.uuid().transform((value) => value.toLowerCase());
+export const bookingUuidSchema = z.uuid().transform((value) => value.toLowerCase());
 
 // Canonical, unpadded base64url encoding of 32 random bytes (256 bits).
 export const bookingTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/);
 
-const phone = z
+export const russianPhoneSchema = z
   .string()
   .max(64)
   .transform((value, context) => {
@@ -24,30 +24,32 @@ const phone = z
     }
   });
 
+export const bookingHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const bookingMasterSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("SPECIFIC"), masterId: bookingUuidSchema }),
+  z.strictObject({ type: z.literal("ANY") }),
+]);
+
+export const bookingStartsAtSchema = z.union([
+  z.date(),
+  z.iso.datetime({ offset: true }).transform((value) => new Date(value)),
+]);
+
+export const bookingClientNameSchema = z.string().trim().min(1).max(200);
+
 export const createBookingSchema = z.strictObject({
-  idempotencyKey: uuid,
+  idempotencyKey: bookingUuidSchema,
   cancellationToken: bookingTokenSchema,
-  serviceId: uuid,
+  serviceId: bookingUuidSchema,
   // Optional only for replay of pre-terms attempts; new bookings require a match in the transaction.
-  expectedServiceTerms: z
-    .string()
-    .regex(/^[0-9a-f]{64}$/)
-    .optional(),
-  expectedBusinessContext: z
-    .string()
-    .regex(/^[0-9a-f]{64}$/)
-    .optional(),
-  master: z.discriminatedUnion("type", [
-    z.strictObject({ type: z.literal("SPECIFIC"), masterId: uuid }),
-    z.strictObject({ type: z.literal("ANY") }),
-  ]),
+  expectedServiceTerms: bookingHashSchema.optional(),
+  expectedBusinessContext: bookingHashSchema.optional(),
+  master: bookingMasterSchema,
   localDate: z.iso.date(),
-  startsAt: z.union([
-    z.date(),
-    z.iso.datetime({ offset: true }).transform((value) => new Date(value)),
-  ]),
-  clientName: z.string().trim().min(1).max(200),
-  clientPhone: phone,
+  startsAt: bookingStartsAtSchema,
+  clientName: bookingClientNameSchema,
+  clientPhone: russianPhoneSchema,
 });
 
 export const cancelBookingSchema = z.strictObject({
