@@ -10,6 +10,7 @@ import {
 import { createClientAppointmentService } from "../../src/modules/appointments/server/client-appointment-service";
 import { businessContextHash } from "../../src/modules/settings/server/context";
 import { localDateForInstant } from "../../src/modules/scheduling/time/business-time";
+import type { AppointmentStatus } from "../../src/generated/prisma/client";
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !/^\/zaprosto_test_[a-f0-9]+$/.test(new URL(url).pathname))
@@ -29,10 +30,7 @@ async function clear() {
 test.beforeAll(async () => {
   passwordHash = await hashPassword(credentials.password);
 });
-async function fixture(
-  start = "2026-01-15T07:00:00Z",
-  status: "SCHEDULED" | "CANCELLED" = "SCHEDULED",
-) {
+async function fixture(start = "2026-01-15T07:00:00Z", status: AppointmentStatus = "SCHEDULED") {
   const secret = prepareBookingAttempt();
   const row = await db.appointment.create({
     data: {
@@ -89,6 +87,16 @@ async function login(page: Page) {
 }
 const path = () => "/admin/appointments/" + id;
 const save = (page: Page) => page.getByRole("button", { name: "Сохранить статус", exact: true });
+const saveContacts = (page: Page) =>
+  page.getByRole("button", { name: "Сохранить имя и телефон", exact: true });
+async function fillContacts(
+  page: Page,
+  name = "Исправленный вымышленный клиент",
+  phone = "8 (999) 111-22-33",
+) {
+  await page.getByLabel("Имя клиента", { exact: true }).fill(name);
+  await page.getByLabel("Телефон клиента", { exact: true }).fill(phone);
+}
 async function choose(page: Page, status = "CANCELLED", reason = "Вымышленная причина") {
   await page.getByRole("combobox", { name: "Новый статус", exact: true }).selectOption(status);
   if (status === "CANCELLED") {
@@ -542,4 +550,285 @@ test("real Action rechecks access after appointment lock wait", async ({ page })
   expect(
     await db.appointment.findUniqueOrThrow({ where: { id }, include: { statusHistory: true } }),
   ).toEqual(before);
+});
+
+for (const status of ["SCHEDULED", "COMPLETED", "NO_SHOW"] as const)
+  test("edit contacts for " + status + " with full nonce navigation", async ({ page }, info) => {
+    const target =
+      status === "SCHEDULED"
+        ? { id, token: clientToken }
+        : await fixture(
+            status === "COMPLETED" ? "2026-01-15T08:00:00Z" : "2026-01-15T09:00:00Z",
+            status,
+          );
+    const cardPath = "/admin/appointments/" + target.id;
+    await login(page);
+    const firstResponse = await page.goto(cardPath);
+    const firstCsp = firstResponse?.headers()["content-security-policy"];
+    await expect(page.getByLabel("Имя клиента", { exact: true })).toHaveValue("Вымышленный Клиент");
+    await expect(page.getByLabel("Телефон клиента", { exact: true })).toHaveValue("+79990000000");
+    await expect(saveContacts(page)).toBeDisabled();
+    await fillContacts(page);
+    await expect(page.getByText("Будет сохранён номер: +79991112233")).toBeVisible();
+    if (status === "SCHEDULED") {
+      for (const width of [360, 390, 1440]) {
+        await page.setViewportSize({ width, height: 900 });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+          true,
+        );
+        await page.screenshot({
+          path: info.outputPath("contact-editor-" + width + ".png"),
+          fullPage: true,
+        });
+      }
+      await page.getByLabel("Телефон клиента", { exact: true }).focus();
+      await page.keyboard.press("Tab");
+      await expect(saveContacts(page)).toBeFocused();
+    }
+    const navigation = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === cardPath &&
+        new URL(response.url()).searchParams.get("contactsUpdated") === "1",
+    );
+    await saveContacts(page).click();
+    const refreshed = await navigation;
+    await expect(page.getByRole("status")).toContainText("Имя и телефон клиента сохранены");
+    expect(new URL(page.url()).searchParams.get("contactsUpdated")).toBe("1");
+    expect(refreshed.headers()["content-security-policy"]).toContain("nonce-");
+    expect(refreshed.headers()["content-security-policy"]).not.toBe(firstCsp);
+    await expect(page.locator(".appointment-facts")).toContainText(
+      "Исправленный вымышленный клиент",
+    );
+    await expect(page.locator(".appointment-facts")).toContainText("+79991112233");
+    const stored = await db.appointment.findUniqueOrThrow({
+      where: { id: target.id },
+      include: { statusHistory: true },
+    });
+    expect(stored).toMatchObject({
+      status,
+      version: 1,
+      clientName: "Исправленный вымышленный клиент",
+      clientPhone: "+79991112233",
+    });
+    expect(stored.statusHistory).toHaveLength(1);
+    expect(await db.telegramLink.count({ where: { appointmentId: target.id } })).toBe(0);
+    expect(await db.notificationOutbox.count({ where: { appointmentId: target.id } })).toBe(0);
+  });
+
+test("cancelled card has the historical message and no contact form", async ({ page }) => {
+  const cancelled = await fixture("2026-01-15T08:00:00Z", "CANCELLED");
+  await login(page);
+  await page.goto("/admin/appointments/" + cancelled.id);
+  await expect(
+    page.getByText("Отменённая запись хранится как историческая и не редактируется.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Имя клиента", { exact: true })).toHaveCount(0);
+  await expect(saveContacts(page)).toHaveCount(0);
+});
+
+test("contact validation and real-change detection are normalized", async ({ page }) => {
+  await login(page);
+  await page.goto(path());
+  await fillContacts(page, "  Вымышленный Клиент  ", "8 (999) 000-00-00");
+  await expect(page.getByText("Будет сохранён номер: +79990000000")).toBeVisible();
+  await expect(saveContacts(page)).toBeDisabled();
+  await page.getByLabel("Телефон клиента", { exact: true }).fill("+1 999 000-00-00");
+  await expect(page.getByLabel("Телефон клиента", { exact: true })).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  await expect(page.getByText(/Укажите российский номер с префиксом/)).toBeVisible();
+  await expect(saveContacts(page)).toBeDisabled();
+  await page.getByLabel("Имя клиента", { exact: true }).fill(" ");
+  await expect(page.getByLabel("Имя клиента", { exact: true })).toHaveAttribute(
+    "aria-invalid",
+    "true",
+  );
+  await expect(page.getByText("Укажите имя клиента.")).toBeVisible();
+  expect((await db.appointment.findUniqueOrThrow({ where: { id } })).version).toBe(0);
+});
+
+test("two tabs preserve the stale contact draft until explicit reread", async ({ page }) => {
+  await login(page);
+  await page.goto(path());
+  await fillContacts(page, "Черновик первой вкладки", "8 999 111-11-11");
+  const other = await page.context().newPage();
+  await other.goto(path());
+  await fillContacts(other, "Данные второй вкладки", "8 999 222-22-22");
+  await saveContacts(other).click();
+  await expect(other.getByRole("status")).toContainText("Имя и телефон клиента сохранены");
+
+  await saveContacts(page).click();
+  await expect(page.getByRole("main").getByRole("alert")).toContainText("Запись уже изменена");
+  await expect(page.getByLabel("Имя клиента", { exact: true })).toHaveValue(
+    "Черновик первой вкладки",
+  );
+  await expect(page.getByLabel("Телефон клиента", { exact: true })).toHaveValue("8 999 111-11-11");
+  await expect(saveContacts(page)).toBeDisabled();
+  await expect(page.getByRole("link", { name: "Сверить карточку (новая вкладка)" })).toBeVisible();
+  const reread = page.getByRole("link", {
+    name: "Перечитать текущую карточку перед новой попыткой",
+  });
+  await expect(reread).toBeVisible();
+  await reread.click();
+  await expect(page.getByLabel("Имя клиента", { exact: true })).toHaveValue(
+    "Данные второй вкладки",
+  );
+  await expect(page.getByLabel("Телефон клиента", { exact: true })).toHaveValue("+79992222222");
+  expect((await db.appointment.findUniqueOrThrow({ where: { id } })).version).toBe(1);
+});
+
+test("client cancellation in another tab preserves the stale contact draft", async ({ page }) => {
+  await login(page);
+  await page.goto(path());
+  await fillContacts(page, "Черновик до отмены", "8 999 333-44-55");
+  const client = await page.context().newPage();
+  await client.goto("/appointment#" + clientToken);
+  await expect(client.getByText("Вымышленный Клиент", { exact: true })).toBeVisible();
+  await client.getByRole("button", { name: "Отменить запись" }).click();
+  await client.getByLabel("Я хочу отменить эту запись").check();
+  await client.getByRole("button", { name: "Да, отменить запись" }).click();
+  await expect(client.locator(".cancellation").getByRole("status")).toContainText(
+    "Запись отменена",
+  );
+
+  await saveContacts(page).click();
+  await expect(page.getByRole("main").getByRole("alert")).toContainText("Запись уже изменена");
+  await expect(page.getByLabel("Имя клиента", { exact: true })).toHaveValue("Черновик до отмены");
+  await expect(saveContacts(page)).toBeDisabled();
+  const after = await db.appointment.findUniqueOrThrow({ where: { id } });
+  expect(after).toMatchObject({
+    status: "CANCELLED",
+    version: 1,
+    clientName: "Вымышленный Клиент",
+    clientPhone: "+79990000000",
+  });
+});
+
+for (const commit of [false, true])
+  test(
+    "unknown contact outcome " + (commit ? "after commit" : "before commit") + " blocks retry",
+    async ({ page }) => {
+      await login(page);
+      await page.goto(path());
+      await fillContacts(page, "Черновик неизвестного ответа", "8 999 555-66-77");
+      let posts = 0;
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ready = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      await page.route("**/admin/appointments/**", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        posts++;
+        if (commit) expect((await route.fetch()).ok()).toBe(true);
+        reached();
+        await gate;
+        await route.abort("failed");
+      });
+      await saveContacts(page).click();
+      await ready;
+      await expect(page.getByText("Сохраняем имя и телефон…")).toBeVisible();
+      release();
+      await expect(page.getByRole("main").getByRole("alert")).toContainText("Результат неизвестен");
+      await expect(page.getByLabel("Имя клиента", { exact: true })).toHaveValue(
+        "Черновик неизвестного ответа",
+      );
+      await expect(saveContacts(page)).toBeDisabled();
+      await page.getByLabel("Имя клиента", { exact: true }).fill("Попытка изменить черновик");
+      await expect(saveContacts(page)).toBeDisabled();
+      const fresh = await page.context().newPage();
+      await fresh.goto(path());
+      await expect(fresh.locator(".appointment-facts")).toContainText(
+        commit ? "Черновик неизвестного ответа" : "Вымышленный Клиент",
+      );
+      expect(posts).toBe(1);
+      expect((await db.appointment.findUniqueOrThrow({ where: { id } })).version).toBe(
+        commit ? 1 : 0,
+      );
+    },
+  );
+
+test("direct contact Action enforces Origin, session and strict DTO", async ({ page }) => {
+  await login(page);
+  await page.goto(path());
+  const captured = waitAction(page);
+  await fillContacts(page, "Первое исправление", "8 999 111-22-33");
+  await saveContacts(page).click();
+  const request = await captured;
+  await expect(page.getByRole("status")).toContainText("Имя и телефон клиента сохранены");
+  const row = await db.appointment.findUniqueOrThrow({ where: { id } });
+  const intent = {
+    id,
+    version: row.version,
+    clientName: "Прямое исправление",
+    clientPhone: "8 999 777-88-99",
+  };
+  for (const extra of [
+    { status: "COMPLETED" },
+    { source: "ADMIN" },
+    { serviceId },
+    { masterId: demoMasterIds[0] },
+    { startsAt: new Date().toISOString() },
+    { cancellationToken: clientToken },
+    { bookingRequestId: row.bookingRequestId },
+    { history: [] },
+    { adminId: randomUUID() },
+    { expectedBusinessContext: "a".repeat(64) },
+  ]) {
+    const response = await page.request.post(path(), {
+      headers: actionHeaders(request),
+      data: JSON.stringify([{ ...intent, ...extra }]),
+    });
+    const body = await response.text();
+    expect(body).toContain("INVALID_INPUT");
+    expect(body).not.toContain(intent.clientPhone);
+    expect(body).not.toContain(clientToken);
+  }
+  const foreign = await page.request.post(path(), {
+    headers: actionHeaders(request, "https://evil.example"),
+    data: JSON.stringify([intent]),
+  });
+  expect(foreign.status() >= 400 || (await foreign.text()).includes("FORBIDDEN")).toBe(true);
+  const missing = await page.request.post(path(), {
+    headers: { ...actionHeaders(request), cookie: "" },
+    data: JSON.stringify([intent]),
+  });
+  expect(await missing.text()).toContain("UNAUTHORIZED");
+  const success = await page.request.post(path(), {
+    headers: actionHeaders(request),
+    data: JSON.stringify([intent]),
+  });
+  expect(await success.text()).toContain('"ok":true');
+  const after = await db.appointment.findUniqueOrThrow({
+    where: { id },
+    include: { statusHistory: true },
+  });
+  expect(after).toMatchObject({
+    version: 2,
+    clientName: "Прямое исправление",
+    clientPhone: "+79997778899",
+  });
+  expect(after.statusHistory).toHaveLength(1);
+});
+
+test("protected fragment page shows corrected contacts without exposing them in URL", async ({
+  page,
+}) => {
+  await login(page);
+  await page.goto(path());
+  await fillContacts(page, "Контакты для клиента", "8 999 444-55-66");
+  await saveContacts(page).click();
+  await expect(page.getByRole("status")).toContainText("Имя и телефон клиента сохранены");
+  expect(page.url()).not.toContain("Контакты");
+  expect(page.url()).not.toContain("7999");
+  await page.goto("/appointment#" + clientToken);
+  await expect(page.getByText("Контакты для клиента", { exact: true })).toBeVisible();
+  await expect(page.getByText("+79994445566", { exact: true })).toBeVisible();
 });

@@ -35,6 +35,8 @@ it("strict filters, calendar dates and bounded page numbers", () => {
   ])
     expect(journalQuerySchema.safeParse(bad).success).toBe(false);
   expect(detailQuerySchema.safeParse({ historyPage: "0" }).success).toBe(false);
+  expect(detailQuerySchema.safeParse({ contactsUpdated: "1" }).success).toBe(true);
+  expect(detailQuerySchema.safeParse({ contactsUpdated: "yes" }).success).toBe(false);
 });
 it("strict mutation: version, context, actor and reason", () => {
   const input = {

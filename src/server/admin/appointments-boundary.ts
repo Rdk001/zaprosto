@@ -1,5 +1,5 @@
 import type { Prisma, PrismaClient } from "../../generated/prisma/client";
-import { getActiveAdmin } from "../../modules/auth/server/auth-service";
+import { getActiveAdmin, getActiveAdminForShare } from "../../modules/auth/server/auth-service";
 import {
   appointmentIdSchema,
   journalQuerySchema,
@@ -9,12 +9,14 @@ import {
   statusTimeAllowed,
   type AppointmentFailure,
 } from "../../modules/appointments/domain/admin-input";
+import { updateAppointmentContactsSchema } from "../../modules/appointments/domain/admin-contact-input";
 import { readAppointment, readJournal } from "../../modules/appointments/server/admin-appointments";
 import { settingsSelect, businessContextHash } from "../../modules/settings/server/context";
 import { validOrigin } from "../public/security";
 
 type MutationResult =
   { ok: true; status: "SCHEDULED" | "COMPLETED" | "NO_SHOW" | "CANCELLED" } | AppointmentFailure;
+type ContactMutationResult = { ok: true } | AppointmentFailure;
 export function createAppointmentsBoundary(db: PrismaClient) {
   async function read<T>(
     token: unknown,
@@ -124,6 +126,63 @@ export function createAppointmentsBoundary(db: PrismaClient) {
         );
       } catch {
         // Unknown COMMIT outcome: no retries and no guessed success/current version.
+        return { ok: false, code: "UNAVAILABLE" };
+      }
+    },
+    async updateContacts(
+      headers: Headers,
+      token: unknown,
+      raw: unknown,
+    ): Promise<ContactMutationResult> {
+      if (!validOrigin(headers)) return { ok: false, code: "FORBIDDEN" };
+      try {
+        return await db.$transaction(
+          async (tx): Promise<ContactMutationResult> => {
+            if (!(await getActiveAdmin(tx, token))) {
+              return { ok: false, code: "UNAUTHORIZED" };
+            }
+            const parsed = updateAppointmentContactsSchema.safeParse(raw);
+            if (!parsed.success) return { ok: false, code: "INVALID_INPUT" };
+            const input = parsed.data;
+
+            // Contact corrections serialize only on this appointment. They do not
+            // depend on catalog, schedule or business-time settings.
+            await tx.$queryRaw`SELECT id FROM appointments WHERE id = ${input.id}::uuid FOR UPDATE`;
+            if (!(await getActiveAdmin(tx, token))) {
+              return { ok: false, code: "UNAUTHORIZED" };
+            }
+            const current = await tx.appointment.findUnique({
+              where: { id: input.id },
+              select: { version: true, status: true },
+            });
+            if (!current) return { ok: false, code: "NOT_FOUND" };
+            if (current.version !== input.version) {
+              return { ok: false, code: "CONFLICT" };
+            }
+            if (current.status === "CANCELLED") {
+              return { ok: false, code: "EDIT_NOT_ALLOWED" };
+            }
+
+            // Hold the current session and account stable through COMMIT. A revoke,
+            // expiry or disablement that wins after the row read is observed here.
+            if (!(await getActiveAdminForShare(tx, token))) {
+              return { ok: false, code: "UNAUTHORIZED" };
+            }
+            await tx.appointment.update({
+              where: { id: input.id, version: input.version },
+              data: {
+                clientName: input.clientName,
+                clientPhone: input.clientPhone,
+                version: { increment: 1 },
+              },
+              select: { id: true },
+            });
+            return { ok: true };
+          },
+          { isolationLevel: "ReadCommitted", maxWait: 5000, timeout: 10000 },
+        );
+      } catch {
+        // The COMMIT may have succeeded. Never retry or disclose current contacts.
         return { ok: false, code: "UNAVAILABLE" };
       }
     },

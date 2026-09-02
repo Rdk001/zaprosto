@@ -944,6 +944,7 @@ h3 {
   margin-left: 8px;
 }
 .catalog-status:focus,
+.contact-status:focus,
 .admin-form h2:focus {
   outline: none;
 }
@@ -1141,6 +1142,26 @@ h3 {
 }
 .appointment-cancel p {
   margin: 0;
+}
+.appointment-contact-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #bdc5b7;
+  border-radius: 8px;
+  min-height: 50px;
+  padding: 13px;
+  color: var(--ink);
+  background: #fff;
+  font-size: 16px;
+}
+.appointment-contact-input[aria-invalid="true"] {
+  border-color: #a53d31;
+}
+.contact-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: center;
 }
 .status-history {
   display: grid;

@@ -14,6 +14,18 @@ export async function changeAppointmentStatusAction(input: unknown) {
   }
 }
 
+export async function updateAppointmentContactsAction(input: unknown) {
+  try {
+    return await appointmentsBoundary.updateContacts(
+      await headers(),
+      (await cookies()).get(sessionCookie().name)?.value,
+      input,
+    );
+  } catch {
+    return { ok: false as const, code: "UNAVAILABLE" as const };
+  }
+}
+
 async function sessionToken() {
   return (await cookies()).get(sessionCookie().name)?.value;
 }

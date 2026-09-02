@@ -35,7 +35,10 @@ export const journalQuerySchema = z.strictObject({
   page,
   mastersAfter: appointmentIdSchema.optional(),
 });
-export const detailQuerySchema = journalQuerySchema.extend({ historyPage: page });
+export const detailQuerySchema = journalQuerySchema.extend({
+  historyPage: page,
+  contactsUpdated: z.literal("1").optional(),
+});
 export type JournalQuery = z.infer<typeof journalQuerySchema>;
 export type DetailQuery = z.infer<typeof detailQuerySchema>;
 export const changeStatusSchema = z.strictObject({
@@ -59,6 +62,7 @@ export type AppointmentFailure = {
     | "UNAVAILABLE"
     | "NOT_FOUND"
     | "CONFLICT"
+    | "EDIT_NOT_ALLOWED"
     | "INVALID_TRANSITION"
     | "NOT_STARTED"
     | "CONFIRMATION_REQUIRED"

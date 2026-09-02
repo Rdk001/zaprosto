@@ -34,7 +34,9 @@
 
 **Следующим этапом назначена 05.6 — ручное создание записи администратором. 05.6 реализована и ожидает независимой приёмки:** защищённый /admin/appointments/new, общий с публичным бронированием транзакционный engine, SPECIFIC/ANY, идемпотентная исходная попытка, готовый текст и fragment-ссылка. См. [инструкцию](admin-appointment-creation.md) и Proposed [ADR-0011](decisions/0011-admin-manual-appointment-creation.md). Commit/push 05.6 до отдельной проверки запрещены.
 
-Редактирование и перенос существующей записи, Telegram/outbox, напоминания, медиа, deployment и этап 05.7 не начаты.
+**05.7.1 — административное исправление имени и телефона прошло независимую проверку и принято пользователем:** 538/538 unit/integration и 124/124 E2E успешно; build, lint, typecheck, format:check и docker compose config успешны. Реализованы отдельный strict DTO, строковая блокировка Appointment, version/ABA, гонки со статусом и клиентской отменой, безопасный unknown outcome и редактор карточки без новой истории, миграции или уведомлений. См. [инструкцию](admin-appointments.md) и Accepted [ADR-0012](decisions/0012-admin-appointment-contact-correction.md).
+
+**05.7.2 не реализована.** Изменение услуги/мастера/даты/времени, перенос, Telegram/outbox, напоминания, медиа и deployment не начаты.
 
 ## 06. Telegram-уведомления
 

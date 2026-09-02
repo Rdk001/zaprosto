@@ -4,6 +4,7 @@ import { getAdminAppointment } from "../../../../server/admin/appointments";
 import { AdminNavigation } from "../../../../components/admin/navigation";
 import { AppointmentsError } from "../../../../components/admin/appointments-error";
 import { AppointmentStatusEditor } from "../../../../components/admin/appointment-status-editor";
+import { AppointmentContactEditor } from "../../../../components/admin/appointment-contact-editor";
 import { LogoutButton } from "../../../../components/admin/logout-button";
 import { money, dateTime } from "../../../../components/booking/format";
 import {
@@ -85,6 +86,21 @@ export default async function AppointmentPage({
             </div>
           </dl>
         </section>
+        {a.status === "CANCELLED" ? (
+          <section className="panel" aria-labelledby="contacts-title">
+            <h2 id="contacts-title">Имя и телефон клиента</h2>
+            <p>Отменённая запись хранится как историческая и не редактируется.</p>
+          </section>
+        ) : (
+          <AppointmentContactEditor
+            id={a.id}
+            version={a.version}
+            clientName={a.clientName}
+            clientPhone={a.clientPhone}
+            href={href}
+            saved={q.contactsUpdated === "1"}
+          />
+        )}
         <AppointmentStatusEditor
           id={a.id}
           version={a.version}

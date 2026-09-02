@@ -10,6 +10,7 @@ import * as appointmentReads from "../../src/modules/appointments/server/admin-a
 import { businessContextHash } from "../../src/modules/settings/server/context";
 import { createClientAppointmentService } from "../../src/modules/appointments/server/client-appointment-service";
 import { createBookingService } from "../../src/modules/booking/server/booking-service";
+import { createAdminBookingService } from "../../src/modules/booking/server/admin-booking-service";
 import {
   hashBookingRequest,
   hashBookingToken,
@@ -130,6 +131,14 @@ async function input(id: string, status: AppointmentStatus = "CANCELLED") {
     expectedBusinessContext: r.detail.businessContext,
     confirmed: true,
   };
+}
+async function contactInput(
+  id: string,
+  clientName = "Исправленный вымышленный клиент",
+  clientPhone = "8 (999) 111-22-33",
+) {
+  const appointment = await db.appointment.findUniqueOrThrow({ where: { id } });
+  return { id, version: appointment.version, clientName, clientPhone };
 }
 const stored = (id: string) =>
   db.appointment.findUniqueOrThrow({
@@ -825,3 +834,398 @@ for (const kind of ["list", "detail"] as const) {
     }
   });
 }
+
+it.each(["SCHEDULED", "COMPLETED", "NO_SHOW"] as const)(
+  "contact correction atomically updates only approved fields for %s",
+  async (status) => {
+    const a = await fixture(status);
+    const before = await stored(a.id);
+    const requestBefore = await db.bookingRequest.findUniqueOrThrow({
+      where: { id: before.bookingRequestId },
+    });
+    expect(
+      await boundary.updateContacts(headers, token, {
+        ...(await contactInput(a.id)),
+        clientName: "  Исправленный вымышленный клиент  ",
+        clientPhone: "+7 (999) 111-22-33",
+      }),
+    ).toEqual({ ok: true });
+    const after = await stored(a.id);
+    expect(after.clientName).toBe("Исправленный вымышленный клиент");
+    expect(after.clientPhone).toBe("+79991112233");
+    expect(after.version).toBe(before.version + 1);
+    for (const key of [
+      "status",
+      "source",
+      "serviceId",
+      "masterId",
+      "startsAt",
+      "endsAt",
+      "serviceNameSnapshot",
+      "servicePriceSnapshot",
+      "serviceDurationSnapshot",
+      "cancellationTokenHash",
+      "bookingRequestId",
+      "cancelledAt",
+      "cancelledBy",
+      "cancellationReason",
+    ] as const)
+      expect(after[key]).toEqual(before[key]);
+    expect(after.statusHistory).toEqual(before.statusHistory);
+    expect(
+      await db.bookingRequest.findUniqueOrThrow({ where: { id: before.bookingRequestId } }),
+    ).toEqual(requestBefore);
+    expect(await db.telegramLink.count({ where: { appointmentId: a.id } })).toBe(0);
+    expect(await db.notificationOutbox.count({ where: { appointmentId: a.id } })).toBe(0);
+  },
+);
+
+it("cancelled contacts are historical and cannot be edited", async () => {
+  const a = await fixture("CANCELLED");
+  const before = await stored(a.id);
+  expect(await boundary.updateContacts(headers, token, await contactInput(a.id))).toEqual({
+    ok: false,
+    code: "EDIT_NOT_ALLOWED",
+  });
+  expect(await stored(a.id)).toEqual(before);
+});
+
+it("contact DTO, Origin, not found and failures reveal no private data", async () => {
+  const a = await fixture();
+  const intent = await contactInput(a.id);
+  const before = await stored(a.id);
+  for (const extra of [
+    { status: "COMPLETED" },
+    { source: "ADMIN" },
+    { serviceId },
+    { masterId },
+    { startsAt: new Date() },
+    { serviceNameSnapshot: "Server value" },
+    { cancellationToken: a.token },
+    { cancellationTokenHash: before.cancellationTokenHash },
+    { bookingRequestId: before.bookingRequestId },
+    { history: [] },
+    { adminId },
+    { expectedBusinessContext: "a".repeat(64) },
+    { version: "0" },
+    { id: "bad" },
+    { clientPhone: "+19990000000" },
+  ]) {
+    const result = await boundary.updateContacts(headers, token, { ...intent, ...extra });
+    expect(result).toMatchObject({ code: "INVALID_INPUT" });
+    expect(JSON.stringify(result)).not.toMatch(
+      /Исправленный|7999|token|hash|cancellation|session/i,
+    );
+  }
+  expect(
+    await boundary.updateContacts(
+      new Headers({ origin: "https://evil.example", host: "evil.example" }),
+      token,
+      intent,
+    ),
+  ).toEqual({ ok: false, code: "FORBIDDEN" });
+  const missing = await boundary.updateContacts(headers, token, {
+    ...intent,
+    id: randomUUID(),
+  });
+  expect(missing).toEqual({ ok: false, code: "NOT_FOUND" });
+  expect(JSON.stringify(missing)).not.toContain(intent.clientName);
+  expect(await stored(a.id)).toEqual(before);
+});
+
+it("two forms and contact ABA preserve one atomic intention", async () => {
+  const a = await fixture();
+  const original = await contactInput(a.id);
+  const [one, two] = await Promise.all([
+    boundary.updateContacts(headers, token, {
+      ...original,
+      clientName: "Первая форма",
+      clientPhone: "8 999 111-11-11",
+    }),
+    second.updateContacts(headers, token, {
+      ...original,
+      clientName: "Вторая форма",
+      clientPhone: "8 999 222-22-22",
+    }),
+  ]);
+  expect([one, two].filter((result) => result.ok)).toHaveLength(1);
+  expect([one, two].filter((result) => !result.ok && result.code === "CONFLICT")).toHaveLength(1);
+  const afterRace = await stored(a.id);
+  expect([
+    ["Первая форма", "+79991111111"],
+    ["Вторая форма", "+79992222222"],
+  ]).toContainEqual([afterRace.clientName, afterRace.clientPhone]);
+  expect(afterRace.version).toBe(1);
+
+  expect(
+    await boundary.updateContacts(headers, token, {
+      ...(await contactInput(a.id)),
+      clientName: "Private test client",
+      clientPhone: "+79990000000",
+    }),
+  ).toEqual({ ok: true });
+  expect(await boundary.updateContacts(headers, token, original)).toEqual({
+    ok: false,
+    code: "CONFLICT",
+  });
+  expect((await stored(a.id)).version).toBe(2);
+});
+
+it("contact correction races administrative status without lost updates", async () => {
+  const a = await fixture();
+  const contacts = await contactInput(a.id);
+  const status = await input(a.id, "COMPLETED");
+  const [contactResult, statusResult] = await Promise.all([
+    boundary.updateContacts(headers, token, contacts),
+    second.change(headers, token, status),
+  ]);
+  expect([contactResult, statusResult].filter((result) => result.ok)).toHaveLength(1);
+  expect(
+    [contactResult, statusResult].filter((result) => !result.ok && result.code === "CONFLICT"),
+  ).toHaveLength(1);
+  const after = await stored(a.id);
+  expect(after.version).toBe(1);
+  if (contactResult.ok) {
+    expect(after).toMatchObject({
+      status: "SCHEDULED",
+      clientName: "Исправленный вымышленный клиент",
+      clientPhone: "+79991112233",
+    });
+    expect(after.statusHistory).toHaveLength(1);
+  } else {
+    expect(after).toMatchObject({
+      status: "COMPLETED",
+      clientName: "Private test client",
+      clientPhone: "+79990000000",
+    });
+    expect(after.statusHistory).toHaveLength(2);
+  }
+});
+
+it("client cancellation and correction serialize in either valid order", async () => {
+  const cancelledFirst = await fixture();
+  const stale = await contactInput(cancelledFirst.id);
+  expect(
+    await clients.cancelBooking({ token: cancelledFirst.token, confirmed: true }),
+  ).toMatchObject({ ok: true });
+  expect(await boundary.updateContacts(headers, token, stale)).toEqual({
+    ok: false,
+    code: "CONFLICT",
+  });
+  expect(
+    await boundary.updateContacts(headers, token, await contactInput(cancelledFirst.id)),
+  ).toEqual({ ok: false, code: "EDIT_NOT_ALLOWED" });
+
+  const editedFirst = await fixture("SCHEDULED", new Date("2026-01-15T08:00Z"));
+  expect(await boundary.updateContacts(headers, token, await contactInput(editedFirst.id))).toEqual(
+    { ok: true },
+  );
+  expect(await clients.cancelBooking({ token: editedFirst.token, confirmed: true })).toMatchObject({
+    ok: true,
+  });
+  const after = await stored(editedFirst.id);
+  expect(after).toMatchObject({
+    status: "CANCELLED",
+    version: 2,
+    clientName: "Исправленный вымышленный клиент",
+    clientPhone: "+79991112233",
+  });
+  expect(after.statusHistory).toHaveLength(2);
+});
+
+it("a concurrent client cancellation has no partial or lost contact update", async () => {
+  const a = await fixture();
+  const [edit, cancel] = await Promise.all([
+    boundary.updateContacts(headers, token, await contactInput(a.id)),
+    clients.cancelBooking({ token: a.token, confirmed: true }),
+  ]);
+  expect(cancel).toMatchObject({ ok: true });
+  const after = await stored(a.id);
+  expect(after.status).toBe("CANCELLED");
+  if (edit.ok) {
+    expect(after).toMatchObject({
+      version: 2,
+      clientName: "Исправленный вымышленный клиент",
+      clientPhone: "+79991112233",
+    });
+  } else {
+    expect(edit.code).toBe("CONFLICT");
+    expect(after).toMatchObject({
+      version: 1,
+      clientName: "Private test client",
+      clientPhone: "+79990000000",
+    });
+  }
+});
+
+for (const mode of ["missing", "expired", "revoked", "disabled"] as const)
+  it("contact correction denies " + mode + " session without private data", async () => {
+    const a = await fixture();
+    const intent = await contactInput(a.id);
+    const before = await stored(a.id);
+    if (mode === "expired") await db.adminSession.updateMany({ data: { expiresAt: new Date(0) } });
+    if (mode === "revoked") await db.adminSession.updateMany({ data: { revokedAt: new Date() } });
+    if (mode === "disabled") await db.adminUser.updateMany({ data: { isActive: false } });
+    const result = await boundary.updateContacts(
+      headers,
+      mode === "missing" ? undefined : token,
+      intent,
+    );
+    expect(result).toEqual({ ok: false, code: "UNAUTHORIZED" });
+    expect(JSON.stringify(result)).not.toContain(intent.clientName);
+    expect(JSON.stringify(result)).not.toContain(intent.clientPhone);
+    expect(await stored(a.id)).toEqual(before);
+  });
+
+it("revocation while contact correction waits for the appointment denies the write", async () => {
+  const a = await fixture();
+  const before = await stored(a.id);
+  const gate = await hold("appointment", a.id);
+  const pending = boundary.updateContacts(headers, token, await contactInput(a.id));
+  try {
+    await waitLock();
+    await other.adminSession.updateMany({ data: { revokedAt: new Date() } });
+  } finally {
+    gate.release();
+    await gate.holder;
+  }
+  expect(await pending).toEqual({ ok: false, code: "UNAUTHORIZED" });
+  expect(await stored(a.id)).toEqual(before);
+});
+
+it("revocation after the appointment read but before save denies the write", async () => {
+  const a = await fixture();
+  const before = await stored(a.id);
+  const actual = auth.getActiveAdminForShare;
+  const spy = vi
+    .spyOn(auth, "getActiveAdminForShare")
+    .mockImplementation(async (client, supplied) => {
+      await other.adminSession.updateMany({ data: { revokedAt: new Date() } });
+      return actual(client, supplied);
+    });
+  try {
+    expect(await boundary.updateContacts(headers, token, await contactInput(a.id))).toEqual({
+      ok: false,
+      code: "UNAUTHORIZED",
+    });
+  } finally {
+    spy.mockRestore();
+  }
+  expect(await stored(a.id)).toEqual(before);
+});
+
+it("unknown contact outcome is unavailable, redacted and never retried", async () => {
+  const a = await fixture();
+  const intent = await contactInput(a.id);
+  const spy = vi
+    .spyOn(db, "$transaction")
+    .mockRejectedValueOnce(new Error("private +79990000000 hash token session"));
+  try {
+    const result = await boundary.updateContacts(headers, token, intent);
+    expect(result).toEqual({ ok: false, code: "UNAVAILABLE" });
+    expect(JSON.stringify(result)).not.toMatch(/7999|hash|token|session|Исправленный/i);
+    expect(spy).toHaveBeenCalledTimes(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it("a failed contact UPDATE rolls back both fields and version", async () => {
+  const a = await fixture();
+  const before = await stored(a.id);
+  await db.$executeRawUnsafe(
+    "CREATE FUNCTION test_contacts_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture rollback'; END $$",
+  );
+  await db.$executeRawUnsafe(
+    "CREATE TRIGGER test_contacts_failure BEFORE UPDATE OF client_name, client_phone ON appointments FOR EACH ROW EXECUTE FUNCTION test_contacts_failure()",
+  );
+  try {
+    expect(await boundary.updateContacts(headers, token, await contactInput(a.id))).toEqual({
+      ok: false,
+      code: "UNAVAILABLE",
+    });
+  } finally {
+    await db.$executeRawUnsafe("DROP TRIGGER test_contacts_failure ON appointments");
+    await db.$executeRawUnsafe("DROP FUNCTION test_contacts_failure()");
+  }
+  expect(await stored(a.id)).toEqual(before);
+});
+
+it("protected client view and public replay return corrected contacts", async () => {
+  const service = await db.service.findUniqueOrThrow({ where: { id: serviceId } });
+  const request = {
+    ...prepareBookingAttempt(),
+    serviceId,
+    expectedServiceTerms: publicServiceTerms(service).termsHash,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
+    master: { type: "SPECIFIC" as const, masterId },
+    localDate: "2026-01-15",
+    startsAt: new Date("2026-01-15T08:00Z"),
+    clientName: "Replay client",
+    clientPhone: "+79990000000",
+  };
+  const booking = createBookingService(db, { now: () => new Date("2026-01-01T00:00Z") });
+  const created = await booking.createBooking(request);
+  if (!created.ok) throw new Error(created.code);
+  expect(
+    await boundary.updateContacts(headers, token, {
+      ...(await contactInput(created.confirmation.id)),
+      clientName: "Исправленный replay",
+      clientPhone: "8 999 444-55-66",
+    }),
+  ).toEqual({ ok: true });
+  expect(await clients.getConfirmation(request.cancellationToken)).toMatchObject({
+    ok: true,
+    confirmation: { clientName: "Исправленный replay", clientPhone: "+79994445566" },
+  });
+  expect(await booking.createBooking(request)).toMatchObject({
+    ok: true,
+    replayed: true,
+    confirmation: {
+      id: created.confirmation.id,
+      clientName: "Исправленный replay",
+      clientPhone: "+79994445566",
+    },
+  });
+  expect(await db.appointment.count()).toBe(1);
+});
+
+it("administrative replay returns corrected contacts without a new booking", async () => {
+  const service = await db.service.findUniqueOrThrow({ where: { id: serviceId } });
+  const request = {
+    ...prepareBookingAttempt(),
+    serviceId,
+    expectedServiceTerms: publicServiceTerms(service).termsHash,
+    expectedBusinessContext: businessContextHash(
+      await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } }),
+    ),
+    master: { type: "SPECIFIC" as const, masterId },
+    localDate: "2026-01-15",
+    startsAt: new Date("2026-01-15T08:00Z"),
+    clientName: "Admin replay",
+    clientPhone: "+79990000000",
+    confirmed: true as const,
+  };
+  const booking = createAdminBookingService(db, { now: () => new Date("2026-01-01T00:00Z") });
+  const created = await booking.createBooking(token, request);
+  if (!created.ok) throw new Error(created.code);
+  expect(
+    await boundary.updateContacts(headers, token, {
+      ...(await contactInput(created.confirmation.id)),
+      clientName: "Исправленный admin replay",
+      clientPhone: "8 999 777-88-99",
+    }),
+  ).toEqual({ ok: true });
+  expect(await booking.createBooking(token, request)).toMatchObject({
+    ok: true,
+    replayed: true,
+    confirmation: {
+      id: created.confirmation.id,
+      clientName: "Исправленный admin replay",
+      clientPhone: "+79997778899",
+    },
+  });
+  expect(await db.appointment.count()).toBe(1);
+});

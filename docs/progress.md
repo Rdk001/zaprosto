@@ -14,6 +14,8 @@
 
 **05.6 — ручное создание записи администратором принято после независимой проверки.** Исходный HEAD и origin/main: `f32f86d0e10156780c6cbd5aa0c0f9923718d4f6`; исходное дерево было чистым. Схема/миграции и зависимости не менялись, ADR-0011 переведён в Accepted. Результаты полного последовательного прогона и разрешённая фиксация приведены в разделе 05.6 ниже; этап 05.7 не начат.
 
+**05.7.1 — административное исправление имени и телефона прошло независимую проверку и принято пользователем: 538/538 unit/integration и 124/124 E2E успешно; build, lint, typecheck, format:check и docker compose config успешны.** Исходный HEAD и origin/main: 75b7d0db07d6db68e9ffd8a34e73bf3138518372, исходное дерево было чистым. Prisma-схема, миграции, зависимости, рабочая БД и Docker volumes не менялись; ADR-0012 переведён в Accepted. 05.7.2 не начата.
+
 ### Выполнено
 
 - Зафиксирована подтверждённая концепция продукта «Запросто».
@@ -266,6 +268,7 @@
 | 05.4 — Настройки времени и горизонта               | Выполнен, принят | Версия настроек, атомарность, контекст расписания/записи, совместимость replay; независимая проверка: 377 unit/integration, 85 E2E. Результат принят пользователем.    |
 | 05.5 — Журнал записей и управление статусами       | Выполнен, принят | Защищённые журнал/карточка, статусы и история, версии/ABA, совместимость клиентской отмены/replay; исправление независимого замечания, 454 unit/integration и 103 E2E. |
 | 05.6 — Ручное создание записи                      | Принят           | ADMIN/SPECIFIC/ANY, общий booking engine, строгая идемпотентность, fragment-ссылка, recovery потерянного ответа, без Telegram/outbox.                                  |
+| 05.7.1 — Исправление имени и телефона              | Принят           | Strict DTO, Appointment FOR UPDATE/version, гонки со статусом/отменой, безопасный unknown outcome; 538 unit/integration и 124 E2E.                                     |
 
 ## Изменённые файлы 05.1
 
@@ -628,3 +631,71 @@
 - Существующие предупреждения pg о concurrent client.query и Next.js next start при output=standalone не исправляются этим этапом. Прежние 3 high npm audit в цепочке Prisma остаются открытыми; audit, force fix и зависимости не запускались/не менялись.
 - sessionStorage — вкладочный recovery: после TTL контакты намеренно удаляются. Уже показанные сведения не стираются после отзыва; отзыв непосредственно после последней успешной проверки не отменяет уже завершённый COMMIT, но boundary не выдаёт его результат и исходная пара остаётся для безопасной сверки.
 - Этап 05.6 принят после независимой проверки: production build, typecheck, lint, format:check, git diff --check и `docker compose config` успешны; полный unit/integration runner — **489/489**, полный E2E Chromium — **113/113**; интерфейс на 360 и 1440 px просмотрен. Временных тестовых БД и процессов нет, рабочая БД, Prisma-схема, миграции, Docker volumes и зависимости не изменялись. ADR-0011 переведён в Accepted. Разрешены один коммит `feat: add admin manual appointment creation` ровно из 29 перечисленных файлов и обычный push в origin/main без force. Следующий этап 05.7 не начинать.
+
+## Этап 05.7.1 — административное исправление имени и телефона (2026-09-01)
+
+Исходный HEAD и origin/main: 75b7d0db07d6db68e9ffd8a34e73bf3138518372, ветка main, рабочее дерево было чистым. Этап прошёл независимую проверку и принят пользователем; разрешены фиксация ровно 17 перечисленных файлов коммитом `feat: add admin appointment contact correction` и обычный push в origin/main без force. Рабочая БД, реальные данные и Docker volumes не используются.
+
+### Реализовано
+
+- В карточку /admin/appointments/[id] добавлен редактор актуальных имени и телефона для SCHEDULED, COMPLETED и NO_SHOW. Для CANCELLED показано неизменяемое историческое состояние без формы.
+- Отдельный strict DTO принимает только UUID записи, ожидаемую Appointment.version, имя и телефон. Переиспользуются существующие trim/min/max и российская нормализация +7XXXXXXXXXX; дополнительные и серверные поля отклоняются.
+- Origin и административная сессия проверяются сервером. ReadCommitted блокирует только Appointment FOR UPDATE, повторно проверяет доступ, перечитывает version/status и перед UPDATE удерживает сессию/аккаунт FOR SHARE. Advisory lock и BusinessSettings не используются.
+- Имя, телефон и version+1 меняются одним UPDATE. Status/source/service/master/time/snapshots/token hash/BookingRequest/cancellation/history не меняются. AppointmentStatusHistory, TelegramLink и NotificationOutbox не создаются.
+- Две формы, ABA, административный статус и клиентская отмена сериализуются через Appointment.version. Если исправление побеждает, последующая отмена сохраняет исправленные контакты; если отмена побеждает, старая форма конфликтует, а свежая получает EDIT_NOT_ALLOWED.
+- UI показывает нормализованный телефон до отправки, блокирует отсутствие реального изменения, сохраняет черновик при конфликте/unknown outcome и не подставляет новую version. Неизвестный результат не повторяется; доступны сверка в новой вкладке и явное полное перечитывание перед новой попыткой.
+- После подтверждённого успеха выполняется полная навигация с новым nonce и сообщением об успехе. Контакты не попадают в URL/query/path/cookie/localStorage; защищённая fragment-ссылка и public/admin replay показывают актуальные значения той же записи.
+- ADR-0012 принят после независимой проверки. Prisma-схема, миграции, package.json/package-lock.json и зависимости не менялись. Изменение параметров визита, перенос, Telegram/outbox и 05.7.2 не реализованы.
+
+### Целевые проверки до полного прогона
+
+- Ранние lint и typecheck успешны; production build web + worker успешен. Build и typecheck не выполнялись одновременно.
+- Новые/связанные unit: **40/40 успешно**.
+- Целевой PostgreSQL integration-файл: итоговые **86/86 успешно** в случайной БД. Первый прогон дал 84 успешных и два падения из-за неверного ожидаемого общего счётчика записей; исправлены только ожидания, повтор полностью успешен.
+- Целевой Chromium-файл: новые сценарии контактов успешны. Первый полный запуск выявил шесть неоднозначных тестовых локаторов без дефекта приложения; после разведения feedback-класса и уточнения области клиентского status все шесть повторно прошли. Полный итоговый runner зафиксирован ниже.
+
+### Полный обязательный прогон
+
+Последовательность 1–8 завершена полностью; build и typecheck не пересекались:
+
+1. `rtk npm run format:check` — успешно, все файлы соответствуют Prettier.
+2. `rtk npm run lint` — успешно, 0 ошибок и предупреждений.
+3. `rtk npm run build` — успешно: Prisma Client 7.10.0, Next.js 16.3.3 production build, web и worker.
+4. `rtk npm run typecheck` — отдельно после завершения build, успешно.
+5. Полный unit/integration runner — итоговые **34 файла, 538/538 тестов успешно**, 33,17 с; случайная БД `zaprosto_test_bbcfbafd663f405db1d7bbf45809529a`, runner завершился с code 0. Первый незасчитанный запуск дал 537/538 из-за ранее существующей чувствительной к времени fixture просроченной сессии в admin-auth с запасом 1 мс; код после него не менялся, повторный полный запуск прошёл полностью.
+6. Полный Playwright/Chromium — **124/124 E2E успешно**, 3,7 мин; production-сборка, случайная БД `zaprosto_test_9b535a5e9fc04fb68449ae7a0d85ec1e`, runner завершился с code 0. Ожидаемые предупреждения pg о concurrent client.query и Next.js о `next start` при standalone остались без падений.
+7. `rtk git diff --check` — успешно, вывода об ошибках нет.
+8. `rtk docker compose config --quiet` — успешно; конфигурация валидна, сервисы и volumes командой не изменялись.
+
+После runner проверено: временных `zaprosto_test_*` БД нет, порт 3108 свободен, процессов Node/Next/Playwright/test runner этой задачи нет. PNG редактора на 360 и 1440 px прочитаны и просмотрены: горизонтального переполнения, обрезания интерфейса, наложений и недоступного управления не обнаружено; снимки находятся только в игнорируемом `test-results/`.
+
+### Изменённые файлы 05.7.1
+
+17 файлов, включая новые; generated/test artifacts не входят:
+
+- docs/admin-appointments.md
+- docs/architecture.md
+- docs/decisions/0012-admin-appointment-contact-correction.md
+- docs/progress.md
+- docs/roadmap.md
+- src/app/admin/appointment-actions.ts
+- src/app/admin/appointments/[id]/page.tsx
+- src/app/globals.css
+- src/components/admin/appointment-contact-editor.tsx
+- src/components/admin/appointment-status-editor.tsx
+- src/modules/appointments/domain/admin-contact-input.ts
+- src/modules/appointments/domain/admin-contact-input.unit.test.ts
+- src/modules/appointments/domain/admin-input.ts
+- src/modules/appointments/domain/admin-input.unit.test.ts
+- src/server/admin/appointments-boundary.ts
+- tests/e2e/admin-appointments.spec.ts
+- tests/integration/admin-appointments.test.ts
+
+### Ограничения и точка продолжения
+
+- ADR-0012 переведён в Accepted после независимой проверки. Пользователь разрешил обычный commit и push ровно перечисленных 17 файлов без force.
+- Проверяется Chromium в локальном HTTP; Firefox/WebKit, физические устройства, screen reader, production HTTPS/reverse proxy/CDN и внешний аудит безопасности не проверялись.
+- Прямой SQL вне протокола version не защищён от ABA. Отзыв, победивший после финальной FOR SHARE-проверки, сериализуется после уже завершившегося исправления.
+- Черновик хранится только в памяти вкладки и теряется при явном перечитывании/навигации. Отдельной exactly-once доставки для административного исправления нет.
+- Прежние 3 high npm audit, предупреждение pg concurrent client.query и предупреждение Next.js next start при standalone остаются открытыми и этим этапом не исправляются.
+- В коммит 05.7.1 входят ровно перечисленные 17 файлов. 05.7.2, параметры визита, перенос, Telegram/outbox, медиа и deployment не начинать.
