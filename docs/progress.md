@@ -12,9 +12,11 @@
 
 **05.5 — журнал записей и управление статусами выполнен и принят пользователем после исправления замечания независимой проверки: 454 unit/integration и 103 E2E успешно.** Исходный коммит b701bb732682d8e638e19e506610e6daa350c2f2. Актуальная точка продолжения 05.5 — в конце документа; следующий этап не начат.
 
-**05.6 — ручное создание записи администратором принято после независимой проверки.** Исходный HEAD и origin/main: `f32f86d0e10156780c6cbd5aa0c0f9923718d4f6`; исходное дерево было чистым. Схема/миграции и зависимости не менялись, ADR-0011 переведён в Accepted. Результаты полного последовательного прогона и разрешённая фиксация приведены в разделе 05.6 ниже; этап 05.7 не начат.
+**05.6 — ручное создание записи администратором принято после независимой проверки.** Исходный HEAD и origin/main: `f32f86d0e10156780c6cbd5aa0c0f9923718d4f6`; исходное дерево было чистым. Схема/миграции и зависимости не менялись, ADR-0011 переведён в Accepted. Результаты полного последовательного прогона и разрешённая фиксация приведены в разделе 05.6 ниже; 05.7.1 и 05.7.2 уже приняты.
 
-**05.7.1 — административное исправление имени и телефона прошло независимую проверку и принято пользователем: 538/538 unit/integration и 124/124 E2E успешно; build, lint, typecheck, format:check и docker compose config успешны.** Исходный HEAD и origin/main: 75b7d0db07d6db68e9ffd8a34e73bf3138518372, исходное дерево было чистым. Prisma-схема, миграции, зависимости, рабочая БД и Docker volumes не менялись; ADR-0012 переведён в Accepted. 05.7.2 не начата.
+**05.7.1 — административное исправление имени и телефона прошло независимую проверку и принято пользователем: 538/538 unit/integration и 124/124 E2E успешно; build, lint, typecheck, format:check и docker compose config успешны.** Исходный HEAD и origin/main: 75b7d0db07d6db68e9ffd8a34e73bf3138518372, исходное дерево было чистым. Prisma-схема, миграции, зависимости, рабочая БД и Docker volumes не менялись; ADR-0012 переведён в Accepted.
+
+**05.7.2 — административное изменение параметров визита и перенос прошла независимую проверку и принята пользователем: 602/602 unit/integration и 133/133 E2E успешно.** Подтверждены KEEP_CURRENT/CATALOG, SPECIFIC/ANY, транзакционный перенос, конкурентность, safe unknown outcome и полная навигация. Исходный HEAD и origin/main: c7c6d91e1a10eeee895de9498f9b946ea3b3d01a. ADR-0013 переведён в Accepted; пользователь разрешил фиксацию ровно 23 перечисленных файлов одним коммитом и обычный push в origin/main. Telegram/outbox, медиа и deployment не начаты.
 
 ### Выполнено
 
@@ -699,3 +701,87 @@
 - Черновик хранится только в памяти вкладки и теряется при явном перечитывании/навигации. Отдельной exactly-once доставки для административного исправления нет.
 - Прежние 3 high npm audit, предупреждение pg concurrent client.query и предупреждение Next.js next start при standalone остаются открытыми и этим этапом не исправляются.
 - В коммит 05.7.1 входят ровно перечисленные 17 файлов. 05.7.2, параметры визита, перенос, Telegram/outbox, медиа и deployment не начинать.
+
+## Этап 05.7.2 — административное изменение параметров визита и перенос (2026-09-03)
+
+Исходный HEAD и origin/main: `c7c6d91e1a10eeee895de9498f9b946ea3b3d01a`. Работа выполнена поверх незакоммиченного checkpoint блоков 05.7.2A/B без отката принятой реализации. Этап прошёл независимую проверку и принят пользователем; разрешена фиксация ровно 23 перечисленных файлов одним коммитом и обычный push в origin/main.
+
+### Реализовано
+
+- Отдельные strict DTO для защищённой availability и подтверждённой мутации не принимают `excludeAppointmentId`, `HistoricalServiceTerms`, snapshots, контакты, status/source, tokens/hashes или произвольные дополнительные поля.
+- KEEP_CURRENT берёт исторические serviceId/name/price/duration только из Appointment и рассчитывает доступность по сохранённой длительности. CATALOG повторно проверяет expectedServiceTerms и применяет только актуальную активную услугу; одинаковый serviceId не смешивает исторические и актуальные условия.
+- SPECIFIC и ANY используют общий scheduling service. Только доверенный серверный путь передаёт excludeAppointmentId; публичная availability и административное создание записи не получили нового ввода или изменённого поведения.
+- Транзакционная мутация повторно проверяет административную сессию, удерживает общий порядок блокировок, выполняет SELECT ... FOR UPDATE Appointment, сверяет version/SCHEDULED, business context, каталог, назначения и расписание. Один UPDATE атомарно освобождает старый и занимает новый интервал с version+1; exclusion constraint остаётся окончательной защитой.
+- Гонки с другим переносом, контактами, статусом, клиентской отменой, публичным и ручным административным созданием завершаются одним победителем и безопасным конфликтом проигравшего. Неизвестный исход COMMIT не повторяется автоматически.
+- В карточку SCHEDULED добавлен редактор исторических/каталожных условий, SPECIFIC/ANY, даты и availability со loading/empty/error, подавлением запоздавших ответов и сбросом устаревшего времени. Перед сохранением показано «Было / Станет» и требуется checkbox.
+- После успеха выполняется полная навигация с безопасным `visitUpdated=1`, свежим серверным чтением и CSP nonce. При конфликте/unknown черновик остаётся только в памяти вкладки, старое намерение блокируется и предлагается сверка или полное перечитывание.
+- COMPLETED и NO_SHOW не переносятся, но сохраняют отдельное исправление контактов. CANCELLED остаётся единым неизменяемым историческим состоянием.
+- Автоматическое уведомление о переносе не отправляется; интерфейс прямо требует связаться с клиентом самостоятельно. TelegramLink/NotificationOutbox не создаются, этап 06 не начат.
+- [ADR-0013](decisions/0013-admin-appointment-rescheduling.md) переведён в Accepted после независимой проверки; обновлены бизнес-правила, пользовательский сценарий, архитектура, roadmap, README и инструкция журнала.
+
+### E2E 05.7.2C
+
+Новый Playwright-spec содержит 9 детерминированных Chromium-сценариев:
+
+- KEEP_CURRENT через реальный UI с историческими snapshots, SPECIFIC, «Было / Станет», обязательным подтверждением, полной навигацией, сохранением безопасных filters/historyPage и version+1;
+- CATALOG с тем же serviceId и явно актуальными условиями, ANY и детерминированным назначением;
+- отдельные неизменяемые состояния COMPLETED, NO_SHOW и CANCELLED;
+- конфликт старого черновика после исправления контактов во второй вкладке, без автоматического повтора;
+- реальное занятие выбранного слота booking engine перед сохранением и обработка SLOT_UNAVAILABLE со свежей availability;
+- потерянный сетевой ответ после успешного COMMIT, блокировка повтора и сверка в новой вкладке;
+- loading, управляемый запоздавший availability-ответ, retryable transport error, пустой день, клавиатурный focus и отсутствие горизонтального overflow на 360/390/1440 px;
+- whitelist безопасных query-параметров, пустые localStorage/sessionStorage и отсутствие новой feature-cookie;
+- честное предупреждение о ручной связи с клиентом.
+
+Первые незасчитанные целевые прогоны обнаружили только неточные локаторы нового теста: accessible name даты включал пояснение, денежный формат — неразрывные пробелы и копейки, а URL полной навигации штатно содержал безопасные дефолтные фильтры. Локаторы уточнены по стабильным id/семантическим значениям; дефектов реализации A/B не найдено.
+
+### Итоговые проверки
+
+Последовательность выполнена без параллельного build/typecheck:
+
+1. `rtk npm run format` — успешно.
+2. `rtk npm run format:check` — успешно.
+3. `rtk npm run lint` — успешно.
+4. `rtk npm run build` — успешно: Prisma generate, Next.js production build и worker.
+5. `rtk npm run typecheck` — успешно после build.
+6. Полный unit/integration runner — **602/602 теста успешно** на отдельной случайной PostgreSQL-БД.
+7. Полный Playwright/Chromium runner — **133/133 E2E успешно** на другой случайной PostgreSQL-БД: прежние 124 регрессии и 9 новых сценариев переноса.
+8. `rtk docker compose config` и `rtk git diff --check` — успешно.
+
+Оба runner применили семь существующих миграций только к своим `zaprosto_test_*` БД и удалили их после завершения. Рабочая БД, Prisma-схема, миграции, зависимости и Docker volumes не менялись. Существующий здоровый контейнер `db` не запускался и не останавливался этой задачей. После проверки временных БД и зависших project Node/Next/Playwright/test процессов нет; порты 3000 и 3108 свободны.
+
+### Изменённые файлы 05.7.2
+
+Всего 23 файла, включая новые:
+
+- README.md
+- docs/admin-appointments.md
+- docs/architecture.md
+- docs/business-rules.md
+- docs/decisions/0013-admin-appointment-rescheduling.md
+- docs/progress.md
+- docs/roadmap.md
+- docs/user-flows.md
+- src/app/admin/appointment-actions.ts
+- src/app/admin/appointments/[id]/page.tsx
+- src/app/globals.css
+- src/components/admin/appointment-reschedule-editor.tsx
+- src/modules/appointments/domain/admin-input.ts
+- src/modules/appointments/domain/admin-reschedule-input.ts
+- src/modules/appointments/domain/admin-reschedule-input.unit.test.ts
+- src/modules/appointments/server/admin-appointments.ts
+- src/modules/appointments/server/admin-reschedule-form.ts
+- src/modules/appointments/server/admin-reschedule-service.ts
+- src/modules/scheduling/server/availability-service.ts
+- src/modules/scheduling/server/types.ts
+- src/server/admin/appointments-boundary.ts
+- tests/e2e/admin-appointment-reschedule.spec.ts
+- tests/integration/admin-appointment-reschedule.test.ts
+
+### Ограничения и точка продолжения
+
+- ADR-0013 имеет статус Accepted после независимой проверки и пользовательской приёмки этапа.
+- Проверялся Chromium в локальном HTTP. Firefox/WebKit, физические устройства, screen reader, production HTTPS/reverse proxy/CDN и внешний аудит безопасности не проверялись.
+- Прямой SQL вне протокола Appointment.version не защищён от ABA.
+- Автоматическое уведомление клиента, Telegram/outbox, напоминания, медиа и deployment не добавлены.
+- Пользователь разрешил отдельную фиксацию ровно перечисленных 23 файлов одним коммитом `feat: add admin appointment rescheduling` и обычный push в origin/main после повторной проверки актуальности ветки.

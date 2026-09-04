@@ -1,4 +1,5 @@
 import type { Prisma } from "../../../generated/prisma/client";
+import { readAppointmentRescheduleForm } from "./admin-reschedule-form";
 import { settingsSelect, businessContextHash } from "../../settings/server/context";
 import { getLocalDayInterval, localDateForInstant } from "../../scheduling/time/business-time";
 import { InvalidLocalDateTimeError } from "../../scheduling/domain/errors";
@@ -14,6 +15,9 @@ export const appointmentSelect = {
   source: true,
   clientName: true,
   clientPhone: true,
+  serviceId: true,
+  masterId: true,
+  masterSelection: true,
   serviceNameSnapshot: true,
   servicePriceSnapshot: true,
   serviceDurationSnapshot: true,
@@ -101,6 +105,7 @@ export async function readAppointment(
   });
   const appointment = await tx.appointment.findUnique({ where: { id }, select: appointmentSelect });
   if (!appointment) return { ok: false as const, code: "NOT_FOUND" as const };
+  const reschedule = await readAppointmentRescheduleForm(tx, appointment);
   const history = await tx.appointmentStatusHistory.findMany({
     where: { appointmentId: id },
     select: {
@@ -122,6 +127,7 @@ export async function readAppointment(
       appointment,
       timezone: settings.timezone,
       businessContext: businessContextHash(settings),
+      reschedule,
       query: {
         ...query,
         date: query.date ?? localDateForInstant(appointment.startsAt, settings.timezone),

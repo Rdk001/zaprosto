@@ -32,11 +32,11 @@
 
 **05.5 реализована, прошла независимую проверку и принята пользователем (454 unit/integration, 103 E2E):** защищённый журнал, карточка с историей и snapshots, фильтры/пагинация, административные статусы и подтверждённая отмена, общий протокол версий с клиентской отменой. Commit и push 05.5 выполнены. См. [инструкцию](admin-appointments.md) и [ADR-0010](decisions/0010-admin-appointment-statuses.md).
 
-**Следующим этапом назначена 05.6 — ручное создание записи администратором. 05.6 реализована и ожидает независимой приёмки:** защищённый /admin/appointments/new, общий с публичным бронированием транзакционный engine, SPECIFIC/ANY, идемпотентная исходная попытка, готовый текст и fragment-ссылка. См. [инструкцию](admin-appointment-creation.md) и Proposed [ADR-0011](decisions/0011-admin-manual-appointment-creation.md). Commit/push 05.6 до отдельной проверки запрещены.
+**05.6 реализована, прошла независимую проверку и принята пользователем (489/489 unit/integration, 113/113 E2E):** защищённый /admin/appointments/new, общий с публичным бронированием транзакционный engine, SPECIFIC/ANY, идемпотентная исходная попытка, готовый текст и fragment-ссылка. Этап зафиксирован; [ADR-0011](decisions/0011-admin-manual-appointment-creation.md) имеет статус Accepted. См. [инструкцию](admin-appointment-creation.md).
 
 **05.7.1 — административное исправление имени и телефона прошло независимую проверку и принято пользователем:** 538/538 unit/integration и 124/124 E2E успешно; build, lint, typecheck, format:check и docker compose config успешны. Реализованы отдельный strict DTO, строковая блокировка Appointment, version/ABA, гонки со статусом и клиентской отменой, безопасный unknown outcome и редактор карточки без новой истории, миграции или уведомлений. См. [инструкцию](admin-appointments.md) и Accepted [ADR-0012](decisions/0012-admin-appointment-contact-correction.md).
 
-**05.7.2 не реализована.** Изменение услуги/мастера/даты/времени, перенос, Telegram/outbox, напоминания, медиа и deployment не начаты.
+**05.7.2 — административное изменение параметров визита и перенос прошла независимую проверку и принята пользователем: 602/602 unit/integration и 133/133 E2E успешно.** Реализованы защищённые availability и транзакционный перенос SCHEDULED-записи, KEEP_CURRENT/CATALOG, SPECIFIC/ANY, optimistic version, редактор «Было / Станет», безопасный unknown outcome и детерминированное E2E-покрытие. ADR-0013 переведён в Accepted. Автоматическое уведомление клиента, Telegram/outbox, напоминания, медиа и deployment не добавлены. См. [инструкцию](admin-appointments.md) и Accepted [ADR-0013](decisions/0013-admin-appointment-rescheduling.md).
 
 ## 06. Telegram-уведомления
 

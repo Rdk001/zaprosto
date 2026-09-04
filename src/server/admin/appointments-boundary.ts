@@ -11,6 +11,11 @@ import {
 } from "../../modules/appointments/domain/admin-input";
 import { updateAppointmentContactsSchema } from "../../modules/appointments/domain/admin-contact-input";
 import { readAppointment, readJournal } from "../../modules/appointments/server/admin-appointments";
+import {
+  createAdminAppointmentRescheduleService,
+  type AdminRescheduleAvailabilityResult,
+  type AdminRescheduleMutationResult,
+} from "../../modules/appointments/server/admin-reschedule-service";
 import { settingsSelect, businessContextHash } from "../../modules/settings/server/context";
 import { validOrigin } from "../public/security";
 
@@ -18,6 +23,7 @@ type MutationResult =
   { ok: true; status: "SCHEDULED" | "COMPLETED" | "NO_SHOW" | "CANCELLED" } | AppointmentFailure;
 type ContactMutationResult = { ok: true } | AppointmentFailure;
 export function createAppointmentsBoundary(db: PrismaClient) {
+  const rescheduleService = createAdminAppointmentRescheduleService(db);
   async function read<T>(
     token: unknown,
     operation: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -55,6 +61,30 @@ export function createAppointmentsBoundary(db: PrismaClient) {
           ? readAppointment(tx, id.data, query.data)
           : { ok: false as const, code: "INVALID_INPUT" as const };
       }),
+    async rescheduleAvailability(
+      headers: Headers,
+      token: unknown,
+      raw: unknown,
+    ): Promise<AdminRescheduleAvailabilityResult> {
+      if (!validOrigin(headers)) return { ok: false, code: "FORBIDDEN" };
+      try {
+        return await rescheduleService.availability(token, raw);
+      } catch {
+        return { ok: false, code: "UNAVAILABLE" };
+      }
+    },
+    async rescheduleAppointment(
+      headers: Headers,
+      token: unknown,
+      raw: unknown,
+    ): Promise<AdminRescheduleMutationResult> {
+      if (!validOrigin(headers)) return { ok: false, code: "FORBIDDEN" };
+      try {
+        return await rescheduleService.reschedule(token, raw);
+      } catch {
+        return { ok: false, code: "UNAVAILABLE" };
+      }
+    },
     async change(headers: Headers, token: unknown, raw: unknown): Promise<MutationResult> {
       if (!validOrigin(headers)) return { ok: false, code: "FORBIDDEN" };
       try {

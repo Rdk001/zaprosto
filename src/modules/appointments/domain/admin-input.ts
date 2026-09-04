@@ -38,6 +38,7 @@ export const journalQuerySchema = z.strictObject({
 export const detailQuerySchema = journalQuerySchema.extend({
   historyPage: page,
   contactsUpdated: z.literal("1").optional(),
+  visitUpdated: z.literal("1").optional(),
 });
 export type JournalQuery = z.infer<typeof journalQuerySchema>;
 export type DetailQuery = z.infer<typeof detailQuerySchema>;

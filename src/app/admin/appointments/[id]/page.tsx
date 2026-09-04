@@ -3,8 +3,9 @@ import { redirect } from "next/navigation";
 import { getAdminAppointment } from "../../../../server/admin/appointments";
 import { AdminNavigation } from "../../../../components/admin/navigation";
 import { AppointmentsError } from "../../../../components/admin/appointments-error";
-import { AppointmentStatusEditor } from "../../../../components/admin/appointment-status-editor";
 import { AppointmentContactEditor } from "../../../../components/admin/appointment-contact-editor";
+import { AppointmentRescheduleEditor } from "../../../../components/admin/appointment-reschedule-editor";
+import { AppointmentStatusEditor } from "../../../../components/admin/appointment-status-editor";
 import { LogoutButton } from "../../../../components/admin/logout-button";
 import { money, dateTime } from "../../../../components/booking/format";
 import {
@@ -86,6 +87,58 @@ export default async function AppointmentPage({
             </div>
           </dl>
         </section>
+        {a.status === "SCHEDULED" && data.reschedule ? (
+          <AppointmentRescheduleEditor
+            appointment={{
+              id: a.id,
+              version: a.version,
+              serviceId: a.serviceId,
+              masterId: a.masterId,
+              masterSelection: a.masterSelection,
+              startsAt: a.startsAt.toISOString(),
+              endsAt: a.endsAt.toISOString(),
+              serviceNameSnapshot: a.serviceNameSnapshot,
+              servicePriceSnapshot: a.servicePriceSnapshot,
+              serviceDurationSnapshot: a.serviceDurationSnapshot,
+              master: { name: a.master.name },
+            }}
+            form={{
+              context: {
+                contextHash: data.reschedule.catalog.context.contextHash,
+                timeZone: data.reschedule.catalog.context.timeZone,
+                dates: data.reschedule.catalog.context.dates,
+              },
+              services: data.reschedule.catalog.services.map((service) => ({
+                id: service.id,
+                name: service.name,
+                priceKopecks: service.priceKopecks,
+                durationMinutes: service.durationMinutes,
+                termsHash: service.termsHash,
+                masters: service.masters.map((master) => ({ id: master.id, name: master.name })),
+              })),
+              historicalMasters: data.reschedule.historicalMasters,
+            }}
+            href={href}
+            saved={q.visitUpdated === "1"}
+          />
+        ) : (
+          <section className="panel" aria-labelledby="visit-parameters-title">
+            <h2 id="visit-parameters-title">Параметры визита</h2>
+            {a.status === "CANCELLED" ? (
+              <p>
+                Отменённая запись хранится как единое историческое состояние. Параметры визита и
+                контакты не редактируются.
+              </p>
+            ) : a.status === "COMPLETED" || a.status === "NO_SHOW" ? (
+              <p>
+                Параметры завершённого визита больше не редактируются. Исправление имени и телефона
+                клиента остаётся доступно отдельно.
+              </p>
+            ) : (
+              <p>Редактор параметров визита сейчас недоступен. Полностью перечитайте карточку.</p>
+            )}
+          </section>
+        )}
         {a.status === "CANCELLED" ? (
           <section className="panel" aria-labelledby="contacts-title">
             <h2 id="contacts-title">Имя и телефон клиента</h2>

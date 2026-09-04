@@ -67,3 +67,11 @@ export interface MasterIntervalCheckQuery extends MasterAvailabilityQuery {
 export interface AnyMasterSelectionQuery extends AvailabilityQuery {
   startsAt: Date;
 }
+
+/**
+ * Trusted historical terms for an existing appointment. This is a server-only
+ * policy argument, not part of any HTTP/Action DTO.
+ */
+export interface HistoricalServiceTerms {
+  durationMinutes: number;
+}

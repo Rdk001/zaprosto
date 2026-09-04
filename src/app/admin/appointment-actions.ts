@@ -26,6 +26,30 @@ export async function updateAppointmentContactsAction(input: unknown) {
   }
 }
 
+export async function getAppointmentRescheduleAvailabilityAction(input: unknown) {
+  try {
+    return await appointmentsBoundary.rescheduleAvailability(
+      await headers(),
+      await sessionToken(),
+      input,
+    );
+  } catch {
+    return { ok: false as const, code: "UNAVAILABLE" as const };
+  }
+}
+
+export async function rescheduleAppointmentAction(input: unknown) {
+  try {
+    return await appointmentsBoundary.rescheduleAppointment(
+      await headers(),
+      await sessionToken(),
+      input,
+    );
+  } catch {
+    return { ok: false as const, code: "UNAVAILABLE" as const };
+  }
+}
+
 async function sessionToken() {
   return (await cookies()).get(sessionCookie().name)?.value;
 }

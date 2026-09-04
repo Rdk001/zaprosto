@@ -17,6 +17,7 @@ import {
   InactiveServiceError,
   InvalidIdentifierError,
   InvalidInstantError,
+  InvalidIntervalError,
   MasterNotEligibleError,
   ServiceNotFoundError,
 } from "../domain/errors";
@@ -36,6 +37,7 @@ import type {
   MasterAvailabilityResult,
   MasterIntervalCheckQuery,
   MasterIntervalCheckResult,
+  HistoricalServiceTerms,
   SchedulingScope,
 } from "./types";
 
@@ -84,9 +86,12 @@ export class SchedulingAvailabilityService {
     private readonly clock: Clock = systemClock,
   ) {}
 
-  async getMasterAvailability(query: MasterAvailabilityQuery): Promise<MasterAvailabilityResult> {
+  async getMasterAvailability(
+    query: MasterAvailabilityQuery,
+    historicalTerms?: HistoricalServiceTerms,
+  ): Promise<MasterAvailabilityResult> {
     assertUuid(query.masterId, "masterId");
-    const availability = await this.loadAvailability(query, query.masterId);
+    const availability = await this.loadAvailability(query, query.masterId, historicalTerms);
     const master = availability.masters[0];
 
     if (!master) {
@@ -96,8 +101,11 @@ export class SchedulingAvailabilityService {
     return master;
   }
 
-  async getAnyMasterAvailability(query: AvailabilityQuery): Promise<AnyMasterAvailabilityResult> {
-    const availability = await this.loadAvailability(query);
+  async getAnyMasterAvailability(
+    query: AvailabilityQuery,
+    historicalTerms?: HistoricalServiceTerms,
+  ): Promise<AnyMasterAvailabilityResult> {
+    const availability = await this.loadAvailability(query, undefined, historicalTerms);
     const mastersById = new Map(availability.masters.map((master) => [master.master.id, master]));
     const slots = combineMasterAvailability(availability.anyMasterInputs).map(
       ({ startsAt, endsAt, candidateMasterIds }) => ({
@@ -125,9 +133,12 @@ export class SchedulingAvailabilityService {
     };
   }
 
-  async checkMasterInterval(query: MasterIntervalCheckQuery): Promise<MasterIntervalCheckResult> {
+  async checkMasterInterval(
+    query: MasterIntervalCheckQuery,
+    historicalTerms?: HistoricalServiceTerms,
+  ): Promise<MasterIntervalCheckResult> {
     assertInstant(query.startsAt, "startsAt");
-    const availability = await this.getMasterAvailability(query);
+    const availability = await this.getMasterAvailability(query, historicalTerms);
     const interval = {
       startsAt: new Date(query.startsAt),
       endsAt: new Date(query.startsAt.getTime() + availability.serviceDurationMinutes * 60_000),
@@ -151,9 +162,12 @@ export class SchedulingAvailabilityService {
     };
   }
 
-  async selectAnyMaster(query: AnyMasterSelectionQuery): Promise<AnyMasterSelectionResult> {
+  async selectAnyMaster(
+    query: AnyMasterSelectionQuery,
+    historicalTerms?: HistoricalServiceTerms,
+  ): Promise<AnyMasterSelectionResult> {
     assertInstant(query.startsAt, "startsAt");
-    const availability = await this.loadAvailability(query);
+    const availability = await this.loadAvailability(query, undefined, historicalTerms);
     const interval = {
       startsAt: new Date(query.startsAt),
       endsAt: new Date(
@@ -193,11 +207,21 @@ export class SchedulingAvailabilityService {
   private async loadAvailability(
     query: AvailabilityQuery,
     requestedMasterId?: string,
+    historicalTerms?: HistoricalServiceTerms,
   ): Promise<LoadedAvailability> {
     assertUuid(query.serviceId, "serviceId");
 
     if (query.excludeAppointmentId) {
       assertUuid(query.excludeAppointmentId, "excludeAppointmentId");
+    }
+
+    if (
+      historicalTerms &&
+      (!Number.isInteger(historicalTerms.durationMinutes) || historicalTerms.durationMinutes <= 0)
+    ) {
+      throw new InvalidIntervalError(
+        "Historical service duration must be a positive integer number of minutes",
+      );
     }
 
     const settings = await this.database.businessSettings.findUnique({
@@ -266,9 +290,11 @@ export class SchedulingAvailabilityService {
       throw new ServiceNotFoundError(query.serviceId);
     }
 
-    if (!service.isActive) {
+    if (!service.isActive && !historicalTerms) {
       throw new InactiveServiceError(query.serviceId);
     }
+
+    const serviceDurationMinutes = historicalTerms?.durationMinutes ?? service.durationMinutes;
 
     const masterIds = service.masters.map(({ master }) => master.id);
     const appointments =
@@ -301,7 +327,7 @@ export class SchedulingAvailabilityService {
 
     const scope: SchedulingScope = {
       serviceId: service.id,
-      serviceDurationMinutes: service.durationMinutes,
+      serviceDurationMinutes,
       localDate: dateContext.localDate,
       timeZone: settings.timezone,
       day: dateContext.day,
@@ -354,7 +380,7 @@ export class SchedulingAvailabilityService {
             settings.timezone,
             SLOT_STEP_MINUTES,
           ),
-          durationMinutes: service.durationMinutes,
+          durationMinutes: serviceDurationMinutes,
           earliestStart: dateContext.localDate === dateContext.today ? now : undefined,
         });
         const dailyLoad: MasterDailyLoad = {
