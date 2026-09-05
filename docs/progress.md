@@ -871,3 +871,55 @@ concurrent `client.query()`.
 - Этап 06 не завершён; ADR-0014 остаётся `Proposed`.
 - npm-зависимости не добавлялись, рабочие credentials не создавались, commit и
   push не выполнялись.
+
+## Этап 06.2B — Telegram domain primitives, payload v1 и Bot API adapter (2026-09-05)
+
+Исходная чистая база: `c986d661c6d7e158b1a0797a587295b7898e875f`;
+ветка `main`, HEAD и `origin/main` совпадали.
+
+### Реализовано
+
+- Добавлен изолированный `src/modules/telegram`: типизированные code-owned policy-константы,
+  генерация/предварительный разбор одноразовых `c_`/`a_` start parameters и purpose-separated
+  SHA-256 без попадания raw token в ошибки.
+- Добавлены strict payload v1 schemas для всех восьми `NotificationType`: канонические UUID,
+  UTC timestamps, версии/длительность, согласованность `changedFields`, запрет лишних и
+  чувствительных полей, контролируемый parser и точный предел сериализации 16 KiB.
+- Добавлены восемь детерминированных dedupe builders с canonical UUID, safe-integer
+  проверками и пределом 255 символов, а также чистые retry/backoff/retry-after/deadline
+  решения с внедряемыми clock/RNG.
+- Добавлен узкий `TelegramBotApi` для `getMe`, `getWebhookInfo`, `deleteWebhook`, `getUpdates`
+  и `sendMessage` поверх встроенного `fetch`: fixed HTTPS origin, POST JSON, AbortSignal,
+  bounded timeout/body, strict envelope/result, safe integer IDs, plain-text sanitizer и
+  закрытая классификация безопасных ошибок ADR-0014.
+- Добавлен детерминированный in-memory `FakeTelegramTransport` для success batches,
+  HTTP 400/401/403/429/5xx, malformed/oversized response, timeout, caller abort,
+  network failure и lost delivery result. Production entrypoint fake не экспортирует.
+- По итогам независимого ревью входящий `Chat.id` принимает signed non-zero safe integer,
+  общая production-точка входа безопасно импортируется обычным Node/worker runtime без
+  Next-only sentinel, а `TelegramLinkPurpose` точно совпадает с Prisma enum:
+  `APPOINTMENT` (`c_`) и `ADMIN_USER` (`a_`).
+- Добавлена [техническая документация runtime-слоя](telegram-runtime.md) со ссылками только
+  на официальные страницы `core.telegram.org`.
+
+### Проверки
+
+- Целевой Telegram unit-набор: **148/148 тестов**, 7/7 файлов, без реальной сети.
+- Полный `npm run test:postgres`: **768/768 тестов**, 45/45 файлов; все восемь миграций
+  применены с нуля к отдельной случайной `zaprosto_test_*` БД, runner завершился успешно и
+  удалил временную БД. Сохранились прежние предупреждения `pg` о concurrent
+  `client.query()`.
+- `npm run format:check`, `npm run lint`, `npm run typecheck`, `npx prisma validate`,
+  `npm run build`, `docker compose config` и `git diff --check` — успешно. Build включает
+  Prisma generate, Next.js 16.3.3 production build и worker TypeScript build.
+
+### Границы и продолжение
+
+- Prisma schema, миграция 06.2A, package manifests, runtime env, `src/worker.ts`, UI и
+  существующие business/server модули не менялись. Новых зависимостей, Telegram SDK,
+  реальных credentials, сетевых вызовов к Bot API `api.telegram.org`, commit и push нет.
+- На 06.2C остаются Prisma repository, claim/lease/fencing/recovery, outbox state
+  transitions и DB/concurrency tests. На 06.3 остаются выпуск deep links, `/start`, polling,
+  connections и соответствующая интеграция; producers/dispatcher/реальная отправка и UI
+  также не входят в 06.2B.
+- Этап 06 целиком не завершён; ADR-0014 остаётся `Proposed`.
