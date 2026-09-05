@@ -23,7 +23,9 @@ let passwordHash: string;
 
 async function clear() {
   await db.notificationOutbox.deleteMany();
-  await db.telegramLink.deleteMany();
+  await db.telegramLinkToken.deleteMany();
+  await db.appointmentTelegramConnection.deleteMany();
+  await db.adminTelegramConnection.deleteMany();
   await db.appointment.deleteMany();
   await db.bookingRequest.deleteMany();
   await db.master.deleteMany();

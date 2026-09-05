@@ -213,7 +213,12 @@ describe("manual admin appointment creation", () => {
         },
       ]);
       expect(JSON.stringify(row)).not.toContain(input.cancellationToken);
-      expect(await database.telegramLink.count({ where: { appointmentId: row.id } })).toBe(0);
+      expect(await database.telegramLinkToken.count({ where: { appointmentId: row.id } })).toBe(0);
+      expect(
+        await database.appointmentTelegramConnection.count({
+          where: { appointmentId: row.id },
+        }),
+      ).toBe(0);
       expect(await database.notificationOutbox.count({ where: { appointmentId: row.id } })).toBe(0);
     },
   );

@@ -18,7 +18,7 @@
 
 **05.7.2 — административное изменение параметров визита и перенос прошла независимую проверку и принята пользователем: 602/602 unit/integration и 133/133 E2E успешно.** Подтверждены KEEP_CURRENT/CATALOG, SPECIFIC/ANY, транзакционный перенос, конкурентность, safe unknown outcome и полная навигация. Исходный HEAD и origin/main: c7c6d91e1a10eeee895de9498f9b946ea3b3d01a. ADR-0013 переведён в Accepted; пользователь разрешил фиксацию ровно 23 перечисленных файлов одним коммитом и обычный push в origin/main. Telegram/outbox, медиа и deployment не начаты.
 
-**06.1 выполнен только как архитектурное проектирование:** подготовлены Proposed ADR-0014 и отдельный технический план Telegram-подключений, transactional outbox и блоков 06.2–06.5. Telegram ещё не реализован; код, Prisma schema, миграции, зависимости, Docker и worker не менялись.
+**06.1 выполнен как архитектурное проектирование:** подготовлены Proposed ADR-0014 и отдельный технический план Telegram-подключений, transactional outbox и блоков 06.2–06.5. **06.2A выполнен только как слой данных:** ранние Telegram/outbox модели заменены, добавлена fail-closed миграция и PostgreSQL integration tests. Telegram ещё не отправляет сообщения; 06.2 целиком не завершён, следующие части — 06.2B и 06.2C. ADR-0014 остаётся `Proposed`.
 
 ### Выполнено
 
@@ -797,3 +797,77 @@
 - Это только архитектурное проектирование: Telegram не реализован, этап 06.2 не начат.
 - Код приложения, Prisma schema, миграции, npm-зависимости, Docker и worker не изменялись.
 - ADR-0014 остаётся `Proposed`; commit и push в рамках 06.1 не выполнялись.
+
+## Этап 06.2A — модель данных Telegram и transactional outbox (2026-09-04)
+
+Исходная чистая база: `a6639504bef0be5e26a0926807e6ae8a52f04aa9`;
+ветка `main`, HEAD и `origin/main` совпадали.
+
+### Реализовано
+
+- Ранние `TelegramLink`, `NotificationOutbox`, `NotificationType` и
+  `NotificationStatus` заменены утверждёнными моделями
+  `TelegramBotState`, `TelegramLinkToken`,
+  `AppointmentTelegramConnection`, `AdminTelegramConnection` и новой
+  `NotificationOutbox`, а также пятью enum-контрактами ADR-0014.
+- В `Appointment` и `AdminUser` добавлены только утверждённые обратные
+  relation-поля; остальные бизнес-поля не менялись.
+- Добавлена миграция
+  `20260904120000_telegram_transactional_outbox`. До любого destructive DDL
+  она в одной транзакции проверяет обе legacy-таблицы и останавливается при
+  первой найденной строке. После успешного preflight создаются пять таблиц и
+  singleton `telegram_bot_state(id = 1, next_update_id = 0)`.
+- Ручной SQL реализует exact target/purpose и recipient/type matrix, составную
+  целостность Appointment/connection, lifecycle token/connection/outbox,
+  attempts/lease/terminal/deadline/payload/code bounds, все `ON DELETE RESTRICT`
+  FK, partial unique активных token/connection и partial
+  claim/recovery/invalidation indexes.
+- Добавлен [migration/runbook](telegram-data-migration.md) с безопасной
+  preflight-проверкой, запретом ручного удаления без анализа и резервной копии,
+  migration status/deploy и проверкой singleton без credentials.
+
+### PostgreSQL tests
+
+- Новый migration-набор во временных схемах повторно применяет семь исходных
+  миграций и отдельно доказывает: upgrade пустого legacy-слоя, fail-closed для
+  строки в `telegram_links`, fail-closed для строки в старой
+  `notification_outbox`, начальный singleton и сохранность существующих
+  Appointment/AdminUser.
+- Новый data-model набор прямыми PostgreSQL insert/update/delete проверяет
+  разрешённые модели и все восемь типов jobs, purpose/target, active uniqueness,
+  disabled history, recipient/type и составной FK, lease/terminal/deadline,
+  16 KiB payload, dedupe, RESTRICT и фактические definitions partial indexes.
+- Целевой прогон новых файлов: **18/18 тестов успешно**.
+- Полный `test:postgres`: **620/620 тестов успешно** в отдельной случайной
+  `zaprosto_test_*` БД; все восемь миграций применены с нуля, временная БД
+  удалена.
+- Точная команда `npm test` дополнительно прошла в другой созданной только для
+  неё случайной `zaprosto_test_*` БД: **620/620**; БД удалена.
+
+Первый полный прогон был незасчитан: без `PUBLIC_ORIGIN` из окружения 44
+существующих admin-теста ожидаемо получили fail-closed `FORBIDDEN`, при этом
+остальные 575 тестов прошли. Повтор с опубликованным в `.env.example`
+`PUBLIC_ORIGIN=http://localhost:3000` прошёл полностью; код из-за
+конфигурационной ошибки не менялся. Сохраняются прежние предупреждения pg о
+concurrent `client.query()`.
+
+### Итоговые проверки
+
+- `npm run prisma:generate` и `npx prisma validate` — успешно.
+- `npm run format:check`, `npm run lint`, `npm run typecheck` — успешно.
+- `npm test` и `npm run test:postgres` — по **620/620**, успешно.
+- `npm run build` — успешно: Prisma generate, Next.js production build и
+  worker TypeScript build.
+- `docker compose config` — успешно.
+
+### Границы и продолжение
+
+- Реализован только слой данных. Telegram API adapter, HTTP-запросы, polling,
+  `/start`, deep links, runtime-конфигурация, dispatcher, отправка,
+  business-event producers, worker integration и UI не реализованы.
+- 06.2 целиком не завершён. В 06.2B остаются runtime payload/policy/hash/dedupe
+  primitives и малый typed adapter с fake transport; в 06.2C — repository
+  claim/lease/fencing/recovery и state transitions с соответствующими тестами.
+- Этап 06 не завершён; ADR-0014 остаётся `Proposed`.
+- npm-зависимости не добавлялись, рабочие credentials не создавались, commit и
+  push не выполнялись.

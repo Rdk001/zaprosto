@@ -612,7 +612,12 @@ for (const status of ["SCHEDULED", "COMPLETED", "NO_SHOW"] as const)
       clientPhone: "+79991112233",
     });
     expect(stored.statusHistory).toHaveLength(1);
-    expect(await db.telegramLink.count({ where: { appointmentId: target.id } })).toBe(0);
+    expect(await db.telegramLinkToken.count({ where: { appointmentId: target.id } })).toBe(0);
+    expect(
+      await db.appointmentTelegramConnection.count({
+        where: { appointmentId: target.id },
+      }),
+    ).toBe(0);
     expect(await db.notificationOutbox.count({ where: { appointmentId: target.id } })).toBe(0);
   });
 

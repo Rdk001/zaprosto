@@ -35,11 +35,34 @@ enum AppointmentActor {
   SYSTEM
 }
 
+enum TelegramLinkPurpose {
+  APPOINTMENT
+  ADMIN_USER
+}
+
+enum TelegramConnectionDisabledReason {
+  USER_DISCONNECTED
+  BOT_REPLACED
+  BOT_BLOCKED
+  CHAT_NOT_FOUND
+  CHAT_WRITE_FORBIDDEN
+  TELEGRAM_USER_DEACTIVATED
+  ADMIN_USER_DEACTIVATED
+}
+
+enum NotificationRecipientKind {
+  APPOINTMENT_CONNECTION
+  ADMIN_CONNECTION
+  DIRECT_CHAT
+}
+
 enum NotificationType {
-  APPOINTMENT_CREATED
-  APPOINTMENT_CANCELLED
-  APPOINTMENT_CHANGED
-  APPOINTMENT_REMINDER
+  CLIENT_CONNECTION_CONFIRMED
+  ADMIN_CONNECTION_CONFIRMED
+  TELEGRAM_CONNECTION_REJECTED
+  CLIENT_APPOINTMENT_CANCELLED
+  CLIENT_APPOINTMENT_CHANGED
+  CLIENT_APPOINTMENT_REMINDER
   ADMIN_APPOINTMENT_CREATED
   ADMIN_APPOINTMENT_CANCELLED
 }
@@ -48,7 +71,9 @@ enum NotificationStatus {
   PENDING
   PROCESSING
   SENT
-  FAILED
+  DEAD
+  CANCELLED
+  SKIPPED
 }
 
 model MediaObject {
@@ -216,9 +241,10 @@ model Appointment {
   service                 Service           @relation(fields: [serviceId], references: [id], onDelete: Restrict)
   bookingRequest          BookingRequest    @relation(fields: [bookingRequestId], references: [id], onDelete: Restrict)
 
-  statusHistory    AppointmentStatusHistory[]
-  telegramLink     TelegramLink?
-  notificationJobs NotificationOutbox[]
+  statusHistory       AppointmentStatusHistory[]
+  telegramLinkTokens  TelegramLinkToken[]
+  telegramConnections AppointmentTelegramConnection[]
+  notificationJobs    NotificationOutbox[]
 
   @@index([masterId, startsAt])
   @@index([status, startsAt])
@@ -242,36 +268,110 @@ model AppointmentStatusHistory {
   @@map("appointment_status_history")
 }
 
-model TelegramLink {
-  id             String      @id @default(uuid()) @db.Uuid
-  appointmentId  String      @unique @map("appointment_id") @db.Uuid
-  tokenHash      String      @unique @map("token_hash")
-  expiresAt      DateTime    @map("expires_at") @db.Timestamptz(3)
-  usedAt         DateTime?   @map("used_at") @db.Timestamptz(3)
-  telegramUserId BigInt?     @map("telegram_user_id")
-  telegramChatId BigInt?     @map("telegram_chat_id")
-  linkedAt       DateTime?   @map("linked_at") @db.Timestamptz(3)
-  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  appointment    Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+model TelegramBotState {
+  id             Int       @id @default(1) @db.SmallInt
+  botUserId      BigInt?   @map("bot_user_id")
+  botUsername    String?   @map("bot_username") @db.VarChar(32)
+  nextUpdateId   BigInt    @default(0) @map("next_update_id")
+  lastVerifiedAt DateTime? @map("last_verified_at") @db.Timestamptz(3)
+  lastPollAt     DateTime? @map("last_poll_at") @db.Timestamptz(3)
+  lastErrorCode  String?   @map("last_error_code") @db.VarChar(64)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  @@map("telegram_links")
+  @@map("telegram_bot_state")
+}
+
+model TelegramLinkToken {
+  id             String              @id @default(uuid()) @db.Uuid
+  purpose        TelegramLinkPurpose
+  tokenHash      String              @unique @map("token_hash") @db.Char(64)
+  appointmentId  String?             @map("appointment_id") @db.Uuid
+  adminUserId    String?             @map("admin_user_id") @db.Uuid
+  expiresAt      DateTime            @map("expires_at") @db.Timestamptz(3)
+  usedAt         DateTime?           @map("used_at") @db.Timestamptz(3)
+  usedByUpdateId BigInt?             @unique @map("used_by_update_id")
+  revokedAt      DateTime?           @map("revoked_at") @db.Timestamptz(3)
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  appointment    Appointment?        @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  adminUser      AdminUser?          @relation(fields: [adminUserId], references: [id], onDelete: Restrict)
+
+  @@index([appointmentId])
+  @@index([adminUserId])
+  @@index([expiresAt])
+  @@map("telegram_link_tokens")
+}
+
+model AppointmentTelegramConnection {
+  id               String                            @id @default(uuid()) @db.Uuid
+  appointmentId    String                            @map("appointment_id") @db.Uuid
+  telegramUserId   BigInt                            @map("telegram_user_id")
+  telegramChatId   BigInt                            @map("telegram_chat_id")
+  sourceUpdateId   BigInt                            @unique @map("source_update_id")
+  connectedAt      DateTime                          @map("connected_at") @db.Timestamptz(3)
+  disabledAt       DateTime?                         @map("disabled_at") @db.Timestamptz(3)
+  disabledReason   TelegramConnectionDisabledReason? @map("disabled_reason")
+  appointment      Appointment                       @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  notificationJobs NotificationOutbox[]
+
+  @@unique([id, appointmentId])
+  @@index([appointmentId])
+  @@index([telegramChatId])
+  @@map("appointment_telegram_connections")
+}
+
+model AdminTelegramConnection {
+  id               String                            @id @default(uuid()) @db.Uuid
+  adminUserId      String                            @map("admin_user_id") @db.Uuid
+  telegramUserId   BigInt                            @map("telegram_user_id")
+  telegramChatId   BigInt                            @map("telegram_chat_id")
+  sourceUpdateId   BigInt                            @unique @map("source_update_id")
+  connectedAt      DateTime                          @map("connected_at") @db.Timestamptz(3)
+  disabledAt       DateTime?                         @map("disabled_at") @db.Timestamptz(3)
+  disabledReason   TelegramConnectionDisabledReason? @map("disabled_reason")
+  adminUser        AdminUser                         @relation(fields: [adminUserId], references: [id], onDelete: Restrict)
+  notificationJobs NotificationOutbox[]
+
+  @@index([adminUserId])
+  @@index([telegramChatId])
+  @@map("admin_telegram_connections")
 }
 
 model NotificationOutbox {
-  id            String             @id @default(uuid()) @db.Uuid
-  appointmentId String?            @map("appointment_id") @db.Uuid
-  type          NotificationType
-  status        NotificationStatus @default(PENDING)
-  scheduledAt   DateTime           @map("scheduled_at") @db.Timestamptz(3)
-  attempts      Int                @default(0)
-  lastError     String?            @map("last_error")
-  dedupeKey     String             @unique @map("dedupe_key")
-  payload       Json
-  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
-  appointment   Appointment?       @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  id                      String                         @id @default(uuid()) @db.Uuid
+  appointmentId           String?                        @map("appointment_id") @db.Uuid
+  appointmentConnectionId String?                        @map("appointment_connection_id") @db.Uuid
+  adminConnectionId       String?                        @map("admin_connection_id") @db.Uuid
+  directChatId            BigInt?                        @map("direct_chat_id")
+  recipientKind           NotificationRecipientKind      @map("recipient_kind")
+  type                    NotificationType
+  status                  NotificationStatus             @default(PENDING)
+  scheduledAt             DateTime                       @map("scheduled_at") @db.Timestamptz(3)
+  nextAttemptAt           DateTime                       @map("next_attempt_at") @db.Timestamptz(3)
+  expiresAt               DateTime?                      @map("expires_at") @db.Timestamptz(3)
+  attempts                Int                            @default(0)
+  leaseToken              String?                        @map("lease_token") @db.Uuid
+  leaseOwner              String?                        @map("lease_owner") @db.VarChar(100)
+  claimedAt               DateTime?                      @map("claimed_at") @db.Timestamptz(3)
+  leaseExpiresAt          DateTime?                      @map("lease_expires_at") @db.Timestamptz(3)
+  invalidatedAt           DateTime?                      @map("invalidated_at") @db.Timestamptz(3)
+  invalidationCode        String?                        @map("invalidation_code") @db.VarChar(64)
+  lastErrorCode           String?                        @map("last_error_code") @db.VarChar(64)
+  payloadVersion          Int                            @default(1) @map("payload_version")
+  payload                 Json
+  dedupeKey               String                         @unique @map("dedupe_key") @db.VarChar(255)
+  sentAt                  DateTime?                      @map("sent_at") @db.Timestamptz(3)
+  finishedAt              DateTime?                      @map("finished_at") @db.Timestamptz(3)
+  createdAt               DateTime                       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime                       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  appointment             Appointment?                   @relation(fields: [appointmentId], references: [id], onDelete: Restrict)
+  appointmentConnection   AppointmentTelegramConnection? @relation(fields: [appointmentConnectionId], references: [id], onDelete: Restrict)
+  adminConnection         AdminTelegramConnection?       @relation(fields: [adminConnectionId], references: [id], onDelete: Restrict)
 
-  @@index([status, scheduledAt])
+  @@index([status, nextAttemptAt, id])
+  @@index([status, leaseExpiresAt])
+  @@index([appointmentId, type])
+  @@index([appointmentConnectionId, status])
+  @@index([adminConnectionId, status])
   @@map("notification_outbox")
 }
 
@@ -285,8 +385,10 @@ model AdminUser {
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  sessions      AdminSession[]
-  statusChanges AppointmentStatusHistory[]
+  sessions            AdminSession[]
+  statusChanges       AppointmentStatusHistory[]
+  telegramLinkTokens  TelegramLinkToken[]
+  telegramConnections AdminTelegramConnection[]
 
   @@map("admin_users")
 }

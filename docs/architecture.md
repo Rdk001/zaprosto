@@ -81,10 +81,15 @@ Worker уведомлений запускается отдельным проц
 
 - `AdminUser`: login, hash пароля, активность и данные защитной блокировки входа.
 - `AdminSession`: hash непрозрачного токена, срок действия и отзыв.
-- `TelegramConnection` и `TelegramLinkToken`: добровольное подключение клиента по одноразовой защищённой ссылке.
-- `NotificationOutbox`: тип уведомления, плановое время, состояние попыток и ключ дедупликации.
+- `TelegramBotState` и `TelegramLinkToken`: singleton offset/identity без секрета и одноразовые hashed-токены двух назначений.
+- `AppointmentTelegramConnection` и `AdminTelegramConnection`: отдельные неизменяемые адресаты клиента и администратора с сохраняемой историей отключений.
+- `NotificationOutbox`: тип и вид адресата, плановое время, deadline, attempts, fencing lease, terminal state, версионированный payload и ключ дедупликации.
 
 Пароль администратора хешируется Argon2id. Сессионные и одноразовые токены сохраняются только в виде hashes.
+
+На подэтапе 06.2A реализован только этот слой данных и его PostgreSQL-ограничения.
+Adapter, polling, обработка update, producers, dispatcher и отправка сообщений остаются
+за пределами текущей реализации.
 
 ## Реализованная аутентификация администратора (05.1)
 

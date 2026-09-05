@@ -875,7 +875,10 @@ it.each(["SCHEDULED", "COMPLETED", "NO_SHOW"] as const)(
     expect(
       await db.bookingRequest.findUniqueOrThrow({ where: { id: before.bookingRequestId } }),
     ).toEqual(requestBefore);
-    expect(await db.telegramLink.count({ where: { appointmentId: a.id } })).toBe(0);
+    expect(await db.telegramLinkToken.count({ where: { appointmentId: a.id } })).toBe(0);
+    expect(await db.appointmentTelegramConnection.count({ where: { appointmentId: a.id } })).toBe(
+      0,
+    );
     expect(await db.notificationOutbox.count({ where: { appointmentId: a.id } })).toBe(0);
   },
 );
