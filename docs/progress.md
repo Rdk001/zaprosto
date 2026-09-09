@@ -18,7 +18,7 @@
 
 **05.7.2 — административное изменение параметров визита и перенос прошла независимую проверку и принята пользователем: 602/602 unit/integration и 133/133 E2E успешно.** Подтверждены KEEP_CURRENT/CATALOG, SPECIFIC/ANY, транзакционный перенос, конкурентность, safe unknown outcome и полная навигация. Исходный HEAD и origin/main: c7c6d91e1a10eeee895de9498f9b946ea3b3d01a. ADR-0013 переведён в Accepted; пользователь разрешил фиксацию ровно 23 перечисленных файлов одним коммитом и обычный push в origin/main. Telegram/outbox, медиа и deployment не начаты.
 
-**06.1 выполнен как архитектурное проектирование:** подготовлены Proposed ADR-0014 и отдельный технический план Telegram-подключений, transactional outbox и блоков 06.2–06.5. **06.2A выполнен только как слой данных:** ранние Telegram/outbox модели заменены, добавлена fail-closed миграция и PostgreSQL integration tests. Telegram ещё не отправляет сообщения; 06.2 целиком не завершён, следующие части — 06.2B и 06.2C. ADR-0014 остаётся `Proposed`.
+**06.1 выполнен как архитектурное проектирование. 06.2A, 06.2B и 06.2C реализованы:** слой данных, runtime primitives, adapter и PostgreSQL repository claim/lease/fencing/recovery образуют завершённое техническое ядро outbox. Проверки 06.2C приведены в конце документа. Telegram ещё не подключён к worker, бизнес-транзакциям и UI; следующий этап — 06.3, весь этап 06 не завершён. ADR-0014 остаётся `Proposed`.
 
 ### Выполнено
 
@@ -923,3 +923,68 @@ concurrent `client.query()`.
   connections и соответствующая интеграция; producers/dispatcher/реальная отправка и UI
   также не входят в 06.2B.
 - Этап 06 целиком не завершён; ADR-0014 остаётся `Proposed`.
+
+## Этап 06.2C — PostgreSQL repository и жизненный цикл outbox (2026-09-09)
+
+Исходная чистая база: `575719b1e04d61850669ccbb65fc5b95a9cb3f40`;
+ветка main, HEAD и origin/main совпадали. Commit и push не выполняются.
+
+### Реализовано
+
+- Добавлены узкие `outbox-contract.ts` и `outbox-repository.ts` в Telegram server-модуле:
+  явный PrismaClient/transaction client, минимальные DTO и безопасные контролируемые
+  результаты гонок, без Next.js, server-only sentinel и глобального singleton.
+- Atomic claim использует одну CTE/UPDATE RETURNING, FOR UPDATE SKIP LOCKED, порядок
+  nextAttemptAt/id, min(capacity, 20), новый UUID каждой lease, attempts + 1 и lease 60 секунд.
+  Транзакция завершается до возврата DTO и до будущего business preflight/HTTP.
+- Fencing, expiry lease, SENT/PENDING/DEAD/SKIPPED, producer CANCELLED/invalidation,
+  retry/deadline/max attempts, очистка lease и безопасные коды покрыты PostgreSQL-тестами.
+- Recovery короткой транзакцией выбирает ограниченный SKIP LOCKED batch, использует
+  готовый retry helper с DELIVERY_OUTCOME_UNKNOWN и применяет fenced batch UPDATE.
+- Payload version/форма/размер проверяются через контракты 06.2B; наружу возвращается
+  только payloadCheck без payload, chat ID, contacts, token или driver details.
+- Согласована конфигурационная компенсация без изменения схемы: при retryAt > expiresAt
+  job становится SKIPPED с CONFIG_UNAUTHORIZED и refund попытки; nextAttemptAt сохраняется.
+  Точная граница и превышение на 1 мс проверены для direct-ответа и reminder.
+- После замечания независимой проверки business invalidation поставлена выше любой
+  неуспешной финализации, включая CONFIGURATION_FAILURE. Такая job становится SKIPPED с
+  business skip-кодом и прежним nextAttemptAt; конфигурационный outcome компенсирует попытку,
+  но не рассчитывает retryAt. Подтверждённый SENT по действующей lease сохраняет приоритет.
+- Добавлены unit boundary tests, PostgreSQL lifecycle/rollback/security tests и реальные
+  concurrency tests на независимых Prisma/pg connections с барьерами и таймаутами.
+- Контракт описан в [telegram-runtime.md](telegram-runtime.md); согласованное исключение
+  отражено также в техническом плане и Proposed ADR-0014.
+
+### Проверки
+
+- Последовательно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run test:unit`, `npm run test:postgres`, `npm run build`, `npx prisma validate`,
+  `docker compose config --quiet`, `git diff --check`, `git status --short` и `git diff --stat`.
+- Unit: **475/475**, 33 файла. Полный изолированный прогон: **861/861**, 49 файлов,
+  включая **386 PostgreSQL-тестов**. Новые outbox suites содержат 18 unit- и 67 PostgreSQL-тестов.
+  Покрыты обе границы конфигурационного retry для `TELEGRAM_CONNECTION_REJECTED` и
+  `CLIENT_APPOINTMENT_REMINDER`, компенсация attempts, stale lease и schedule constraint,
+  а также приоритет CONNECTION_DISABLED/VISIT_CHANGED над конфигурационной ошибкой.
+- Штатный `scripts/test-postgres.mjs` получил DATABASE_URL/TEST_DATABASE_URL и PUBLIC_ORIGIN
+  из локальных примерных настроек, создал случайную `zaprosto_test_*`, применил восемь
+  существующих миграций и удалил базу после тестов. Проверка системного каталога после
+  завершения: временных тестовых баз **0**. Интеграционные тесты напрямую на рабочей БД
+  не запускались.
+- Первоначально и после прерывания сессии runner не смог подключиться: локальный PostgreSQL
+  был остановлен. Запущен только существующий Compose-сервис `db`, повторный полный прогон
+  завершился успешно. Рабочая БД и volumes не очищались. Сохранились прежние предупреждения
+  `pg` о concurrent `client.query()`; ошибок и пропущенных тестов нет.
+- Production build включает Prisma generate, Next.js build и worker TypeScript build.
+  Последующая правка этого журнала повторно проверена форматированием и `git diff --check`.
+
+### Границы и продолжение
+
+06.2C реализован, техническое ядро 06.2 (данные, runtime primitives, adapter и outbox)
+завершено. Telegram всё ещё не подключён к worker, бизнес-транзакциям или UI.
+Prisma schema, миграции 06.2A, npm manifests/dependencies, runtime configuration,
+worker и UI не менялись; реальные Telegram credentials и вызовы Bot API не использовались.
+
+Следующий этап — 06.3: конфигурация/readiness, leader polling, обработка offset и /start,
+выпуск/отзыв deep links, клиентские/административные connections и их интеграционные тесты.
+06.3 не начат. Бизнес-producers и dispatcher остаются 06.4/06.5; весь этап 06 не завершён.
+ADR-0014 остаётся Proposed до завершения реальной интеграции и приёмки.

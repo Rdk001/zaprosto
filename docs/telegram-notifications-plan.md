@@ -665,6 +665,24 @@ Producer allowlist для `invalidationCode`: `APPOINTMENT_CANCELLED`, `APPOINTM
 
 `lastErrorCode` хранит только код из allowlist. В БД и логах запрещены полный ответ Telegram, URL запроса, bot token, payload сообщения, raw deep-link token, chat/user id, телефон и персональные строки. Подтверждённая конфигурационная ошибка, при которой Telegram доказанно не принял сообщение, возвращает текущую job в `PENDING`, очищает lease, компенсирует сделанный claim уменьшением `attempts` на один, ставит `nextAttemptAt` не раньше чем через пять минут и открывает circuit до следующей успешной проверки `getMe`. Identity/webhook ошибки обнаруживаются до claim. Пока circuit открыт, новые jobs не claim-ятся; network/invalid-response не получают refund, потому что их outcome неизвестен. Так постоянная конфигурационная проблема не исчерпывает очередь в crash loop.
 
+Уточнение 06.2C, согласованное пользователем: компенсация после claim допустима только
+для CONFIG_UNAUTHORIZED с подтверждённым отсутствием принятого сообщения. Сначала
+вычисляется retryAt = now + 5 минут. При отсутствии expiresAt или retryAt <= expiresAt
+сохраняется PENDING с nextAttemptAt = retryAt и null sentAt/finishedAt.
+Если retryAt > expiresAt, job становится SKIPPED с finishedAt = now и null sentAt,
+а существующий допустимый nextAttemptAt остаётся без изменения. В обоих случаях
+attempts уменьшается на один с нижней границей 0, lease очищается и
+lastErrorCode = CONFIG_UNAUTHORIZED. Producer invalidation-пара не изменяется.
+Это узкое исключение: SKIPPED отражает запрет повтора дедлайном, а код сохраняет
+конфигурационную причину. Schema и миграция 06.2A остаются неизменными.
+
+Эта компенсация применяется только к неинвалидированной job. Подтверждённый SENT имеет
+приоритет над invalidation; для любого другого outcome business invalidation имеет приоритет
+над конфигурационной ошибкой. Инвалидированная job становится SKIPPED с существующим
+invalidation-кодом, отображённым в безопасный worker-side код, и прежним nextAttemptAt.
+CONFIGURATION_FAILURE по-прежнему компенсирует одну попытку, но retryAt не рассчитывается и
+CONFIG_UNAUTHORIZED не заменяет причину business invalidation.
+
 `DEAD` автоматически не переоткрывается и не правится ручным SQL. После устранения причины оператор видит безопасный код и связывается с получателем иным способом; отдельный аудируемый resend может быть добавлен только новым продуктовым решением.
 
 ## 17. Напоминания
