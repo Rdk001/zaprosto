@@ -6,8 +6,12 @@ describe("Telegram production entrypoint", () => {
 
     expect(Object.keys(entrypoint).sort()).toEqual([
       "TelegramBotApiError",
+      "TelegramBotStateError",
+      "TelegramBotStateRepository",
       "createTelegramBotApi",
       "createTelegramFetchTransport",
+      "parseTelegramRuntimeConfiguration",
+      "verifyTelegramBotReadiness",
     ]);
     expect(entrypoint).not.toHaveProperty("FakeTelegramTransport");
     expect(entrypoint).not.toHaveProperty("TelegramTransport");

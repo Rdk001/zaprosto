@@ -988,3 +988,69 @@ worker и UI не менялись; реальные Telegram credentials и в�
 выпуск/отзыв deep links, клиентские/административные connections и их интеграционные тесты.
 06.3 не начат. Бизнес-producers и dispatcher остаются 06.4/06.5; весь этап 06 не завершён.
 ADR-0014 остаётся Proposed до завершения реальной интеграции и приёмки.
+
+## Этап 06.3A — конфигурация и readiness Telegram (2026-09-09)
+
+Исходная чистая база: e540819f2bb6ca6ffcf42826020042916cad6f0b;
+ветка main, HEAD и origin/main совпадали. Commit и push не выполнялись.
+
+### Реализовано
+
+- Добавлен Node/server-safe parser трёх утверждённых Telegram env-переменных с
+  discriminated состояниями DISABLED, INCOMPLETE, INVALID и ENABLED. Timeout имеет
+  default 30 секунд и строгий целочисленный диапазон 5–50; username принимается без @.
+- Полная конфигурация с bot token и poll timeout остаётся в worker/server-модуле.
+  Отдельный чистый web-safe parser принимает только TELEGRAM_BOT_USERNAME; его вход,
+  контракт и DTO readiness не содержат token или poll timeout.
+- Добавлены сервис проверки getMe/getWebhookInfo с внедряемыми TelegramBotApi,
+  TelegramBotState repository и clock, а также fail-closed нормализация ошибок.
+  Disabled/partial конфигурация не вызывает Bot API; webhook автоматически не удаляется.
+- TelegramBotState обновляется короткой ReadCommitted-транзакцией с row lock после HTTP.
+  Первый bot id фиксируется, повтор того же id сохраняет offset, lastPollAt и connections,
+  если username совпадает без учёта регистра. Различие только в регистре не переписывает
+  сохранённый username. Другой id или фактически новый username fail-closed с
+  BOT_IDENTITY_MISMATCH без обновления identity и lastVerifiedAt. Успех обновляет
+  lastVerifiedAt и очищает lastErrorCode.
+- Чистый web readiness требует совпадающую подтверждённую identity, отсутствие ошибки
+  и свежие lastVerifiedAt/lastPollAt. Точная граница 120000 мс считается свежей;
+  120001 мс, null и будущие timestamps дают not ready. Identity check не создаёт
+  фиктивный polling heartbeat.
+- .env.example дополнен только закомментированными безопасными placeholders.
+  Prisma schema, существующая migration, npm dependencies, worker, UI и Appointment
+  business logic не менялись.
+
+### Проверки
+
+- Узкий unit-набор 06.3A: 56/56 тестов, 7 файлов. Узкий PostgreSQL-набор singleton:
+  7/7 тестов на случайной zaprosto_test_* базе через scripts/test-postgres.mjs.
+- Итоговый unit-набор: 529/529, 38 файлов. Полный изолированный прогон PostgreSQL:
+  922/922, 55 файлов, включая 393 integration-теста.
+- Последовательно прошли npm run format, npm run format:check, npm run lint,
+  npm run typecheck, npm run test:unit, npm run test:postgres, npm run build,
+  npx prisma validate, docker compose config --quiet, git diff --check,
+  git status --short и git diff --stat.
+- Проверены первая identity, совпадение username без учёта регистра с сохранением
+  offset/connections, fail-closed для нового username того же bot id, другой bot id,
+  env/getMe username mismatch, активный webhook, CONFIG_UNAUTHORIZED, временная adapter
+  error, восстановление и rollback до COMMIT. Canary-тесты не находят token и webhook URL
+  в web-safe input/output типах, safe DTO, Error.message, lastErrorCode, test logger,
+  документации или snapshots.
+- Реальная Telegram-сеть и credentials не использовались. Все Bot API сценарии
+  выполнены через fake, глобальный fetch в PostgreSQL-наборе запрещён spy.
+  Рабочая база не мигрировалась: runner создавал и удалял только случайные тестовые базы.
+- Первый полный runner был запущен без обязательного PUBLIC_ORIGIN и ожидаемо получил
+  FORBIDDEN в 44 старых admin-тестах; повтор с безопасными локальными DATABASE_URL и
+  PUBLIC_ORIGIN из .env.example прошёл полностью.
+
+### Границы и продолжение
+
+06.3A завершает только конфигурацию, identity/webhook verification, безопасное состояние
+singleton и вычисление web readiness. Worker пока не вызывает readiness service.
+Advisory leader lock, getUpdates, polling loop, offset processing, /start, выпуск и отзыв
+links, Appointment/Admin connections, confirmation/reminder jobs, producers, dispatcher,
+sendMessage, Telegram UI и новые endpoints не реализованы.
+
+Точка продолжения: 06.3B — выпуск и отзыв клиентских/административных одноразовых
+ссылок; 06.3C — обработка /start и создание connections/jobs; 06.3D — leader polling,
+offset protocol и интеграция worker.
+Этап 06 целиком не завершён, ADR-0014 остаётся Proposed. Commit и push не выполнялись.

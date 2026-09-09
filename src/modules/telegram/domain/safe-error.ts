@@ -41,6 +41,17 @@ export const TELEGRAM_ADAPTER_ERROR_CODES = [
 
 export type TelegramAdapterErrorCode = (typeof TELEGRAM_ADAPTER_ERROR_CODES)[number];
 
+const telegramSafeErrorCodes = new Set<string>(TELEGRAM_SAFE_ERROR_CODES);
+const telegramAdapterErrorCodes = new Set<string>(TELEGRAM_ADAPTER_ERROR_CODES);
+
+export function isTelegramSafeErrorCode(value: unknown): value is TelegramSafeErrorCode {
+  return typeof value === "string" && telegramSafeErrorCodes.has(value);
+}
+
+export function isTelegramAdapterErrorCode(value: unknown): value is TelegramAdapterErrorCode {
+  return typeof value === "string" && telegramAdapterErrorCodes.has(value);
+}
+
 export type TelegramDomainErrorCode =
   "INVALID_DEDUPE_INPUT" | "INVALID_RANDOM_SOURCE" | "INVALID_RETRY_INPUT";
 

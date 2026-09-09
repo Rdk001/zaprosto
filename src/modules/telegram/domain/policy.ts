@@ -15,6 +15,7 @@ export const TELEGRAM_POLICY = {
   reminderGraceMs: 15 * 60 * 1000,
   globalSendStartsPerSecond: 25,
   perChatSendStartsPerSecond: 1,
+  readinessFreshnessMs: 2 * 60 * 1000,
   linkIssuance: {
     windowMs: 15 * 60 * 1000,
     maxAttemptsPerTarget: 5,

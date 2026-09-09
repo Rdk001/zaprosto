@@ -21,6 +21,7 @@ describe("TELEGRAM_POLICY", () => {
       reminderGraceMs: 900_000,
       globalSendStartsPerSecond: 25,
       perChatSendStartsPerSecond: 1,
+      readinessFreshnessMs: 120_000,
       linkIssuance: {
         windowMs: 900_000,
         maxAttemptsPerTarget: 5,

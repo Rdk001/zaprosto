@@ -237,3 +237,54 @@ refund, очистка lease, неизменность invalidation и schedule 
 клиентские/административные подключения и соответствующие тесты. Бизнес-producers
 остаются 06.4, dispatcher/отправка/эксплуатация — 06.5. Этап 06 целиком не завершён,
 ADR-0014 остаётся Proposed до реальной интеграции и приёмки.
+
+## Конфигурация и readiness (06.3A)
+
+Worker/server-модуль runtime-config.ts разбирает три утверждённые переменные:
+TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME и необязательный
+TELEGRAM_POLL_TIMEOUT_SECONDS. Обе отсутствующие обязательные переменные означают
+штатное состояние DISABLED. Одна отсутствующая переменная даёт INCOMPLETE, а
+невалидный token, username или timeout — INVALID с кодом из закрытого allowlist.
+Username принимается и хранится без @. Timeout по умолчанию равен 30 секундам;
+допустимы только целые значения 5–50. Синтаксически неверный token и ответ Bot API
+401 дают только CONFIG_UNAUTHORIZED.
+
+Отдельный чистый web-safe parser принимает объект только с TELEGRAM_BOT_USERNAME.
+Отсутствующий username означает DISABLED, невалидный — INVALID с безопасным
+BOT_USERNAME_INVALID, валидный — ENABLED с username. Его входной и выходной типы не
+содержат TELEGRAM_BOT_TOKEN или TELEGRAM_POLL_TIMEOUT_SECONDS; parser не импортирует
+полную runtime-конфигурацию и не читает token. Полный результат runtime parser доступен
+только worker/server-коду и содержит token лишь в состоянии ENABLED. Token не входит
+в web-safe domain-модуль, DTO readiness, PostgreSQL, ошибки или логи. .env.example
+содержит только закомментированные placeholders.
+
+Сервис verifyTelegramBotReadiness получает уже созданный TelegramBotApi, repository,
+типизированную конфигурацию и внедряемые часы. DISABLED, INCOMPLETE и INVALID не
+вызывают Bot API; неполная или ошибочная конфигурация записывает существующий
+безопасный глобальный код CONFIG_UNAUTHORIZED. Для ENABLED сервис вызывает getMe,
+сравнивает username без учёта регистра, проверяет сохранённый bot id, затем вызывает
+getWebhookInfo. Непустой webhook даёт WEBHOOK_ACTIVE; deleteWebhook автоматически
+не вызывается, URL нигде не сохраняется.
+
+HTTP-вызовы выполняются без SQL-транзакции. Успешная identity фиксируется короткой
+ReadCommitted-транзакцией с row lock singleton. Пустая identity заполняется. Для
+сохранённой identity должны совпасть bot id и username без учёта регистра; различие
+только в регистре успешно подтверждается без перезаписи сохранённого username.
+Другой bot id или фактически новый username не принимаются и не перезаписываются:
+сохраняется BOT_IDENTITY_MISMATCH, lastVerifiedAt не обновляется. Принимающая смену
+username операция появится только вместе с будущим атомарным протоколом rotation,
+который одновременно обновит TELEGRAM_BOT_USERNAME и отзовёт неиспользованные
+deep-link tokens. Запись 06.3A не меняет nextUpdateId, lastPollAt или connections.
+lastVerifiedAt обновляется только после успешных getMe и getWebhookInfo и совпадения
+сохранённой identity.
+
+Чистая функция computeTelegramWebReadiness возвращает только enabled, ready,
+безопасный reasonCode и валидно настроенный botUsername. Положительный результат
+требует подтверждённую совпадающую identity, отсутствие глобальной ошибки и свежие
+lastVerifiedAt и lastPollAt. Возраст каждой отметки должен быть от нуля до 120000 мс
+включительно: точная двухминутная граница считается свежей, 120001 мс — stale.
+Будущая отметка времени закрывается как not ready. Проверка identity не подделывает
+lastPollAt, поэтому до будущего успешного polling web readiness остаётся false.
+
+06.3A не подключает этот сервис к worker и не реализует advisory lock, getUpdates,
+offset, обработку команд, ссылки, connections, producer, dispatcher, UI или endpoint.
