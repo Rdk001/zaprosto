@@ -18,7 +18,7 @@
 
 **05.7.2 — административное изменение параметров визита и перенос прошла независимую проверку и принята пользователем: 602/602 unit/integration и 133/133 E2E успешно.** Подтверждены KEEP_CURRENT/CATALOG, SPECIFIC/ANY, транзакционный перенос, конкурентность, safe unknown outcome и полная навигация. Исходный HEAD и origin/main: c7c6d91e1a10eeee895de9498f9b946ea3b3d01a. ADR-0013 переведён в Accepted; пользователь разрешил фиксацию ровно 23 перечисленных файлов одним коммитом и обычный push в origin/main. Telegram/outbox, медиа и deployment не начаты.
 
-**06.1 выполнен как архитектурное проектирование. 06.2A, 06.2B и 06.2C реализованы:** слой данных, runtime primitives, adapter и PostgreSQL repository claim/lease/fencing/recovery образуют завершённое техническое ядро outbox. Проверки 06.2C приведены в конце документа. Telegram ещё не подключён к worker, бизнес-транзакциям и UI; следующий этап — 06.3, весь этап 06 не завершён. ADR-0014 остаётся `Proposed`.
+**06.1 выполнен как архитектурное проектирование; 06.2A–06.2C и 06.3A–06.3C реализованы.** Слой данных, runtime primitives, adapter, outbox repository, readiness, одноразовые deep links и транзакционная обработка `/start` образуют проверенное основание Telegram runtime. Polling, offset и worker integration остаются этапом 06.3D; весь этап 06 не завершён. ADR-0014 остаётся `Proposed`.
 
 ### Выполнено
 
@@ -1122,3 +1122,84 @@ confirmation/reminder jobs, outbox producers, dispatcher или `sendMessage`.
 и confirmation/reminder jobs; 06.3D — leader polling, offset protocol и интеграция
 worker. Этапы 06.3 и 06 целиком не завершены, ADR-0014 остаётся Proposed. Commit и push
 не выполнялись.
+
+## Этап 06.3C — обработка Telegram `/start`, connections и jobs (2026-09-11)
+
+Исходная чистая база: `83d5ac264331381e8128ec41e3cbded61ebce253`; ветка `main`,
+`HEAD` и `origin/main` совпадали. Commit и push не выполнялись.
+
+### Реализовано
+
+- Добавлен чистый parser нормализованного `TelegramUpdate`. Он принимает только private
+  message от обычного пользователя с положительными совпадающими `chat.id/from.id` и
+  точные формы `/start <parameter>` либо
+  `/start@<configured_bot_username> <parameter>`. Между командой и параметром допустим
+  ровно один ASCII-пробел; username сравнивается без учёта регистра. Leading/trailing
+  whitespace, newline, дополнительные аргументы, группы/каналы, bot messages и malformed
+  token дают только `IGNORED` без DB effects.
+- Raw start parameter проходит существующий строгий parser и немедленно заменяется
+  purpose-separated SHA-256. Безопасный DTO содержит ровно `updateId`, положительные
+  `telegramUserId/telegramChatId`, `purpose` и `tokenHash`; raw token не передаётся в
+  processor/repository, result, error, payload или dedupe key.
+- `processTelegramStart` принимает runtime input как `unknown`: до чтения ключей
+  допускается только ненулевой обычный объект без массива, затем проверяются точная форма,
+  типы и границы PostgreSQL bigint. Любое невалидное значение даёт только закрытую
+  `START_PROCESSOR_INPUT_INVALID` без cause, credentials и отражения входа.
+  Processor использует только переданный `Prisma.TransactionClient`, не открывает
+  вложенную транзакцию и не выполняет сеть. Время берётся из PostgreSQL
+  `clock_timestamp()::timestamptz(3)`. Наружу выходят только `CONNECTED`,
+  `ALREADY_PROCESSED` и `REJECTED`; storage/driver errors по-прежнему нормализуются в
+  `START_PROCESSOR_STORAGE_FAILURE` без cause и входных данных.
+- Зафиксирован двухфазный lock protocol: domain-separated update advisory lock для
+  replay-сериализации, unlocked lookup link hash, `Appointment/AdminUser FOR UPDATE`,
+  admin-only domain-separated transaction advisory lock private chat, затем повторное
+  чтение `TelegramLinkToken FOR UPDATE`. После ожидания полностью перепроверяются
+  purpose/target FK, revoked/used/expiry, target state и active connections. Тем самым
+  target всегда предшествует link-token mutation и согласован с 06.3B.
+- Успех атомарно создаёт неизменяемую Appointment/Admin connection, помечает link token
+  использованным тем же DB now/updateId и ставит confirmation job. Для клиентской записи
+  reminder создаётся только при `startsAt - now > 2 часа`; он назначен ровно за два часа,
+  истекает через 15 минут и содержит только `visitVersion` и актуальный `expectedVisit`.
+  Чистый расчёт schedule детерминированно проверяет отсутствие reminder ровно на границе
+  двух часов и его создание при превышении на 1 мс; production now остаётся PostgreSQL.
+- Синтаксически корректная, но неприменимая команда создаёт одинаковую direct-chat
+  `TELEGRAM_CONNECTION_REJECTED` job с пустым payload и deadline 5 минут. Причина отказа,
+  target existence и credentials нигде не сохраняются и не возвращаются.
+- Dedupe keys 06.3C централизованы в точных `telegram:v1:*` формах и зависят только от
+  immutable connection/appointment identity, Appointment version либо updateId. Повтор
+  update, повтор использованного token тем же chat/user и потерянный ответ ничего не
+  дублируют; другой chat/user получает neutral rejection. Partial UNIQUE и dedupe UNIQUE
+  остаются последней DB-защитой.
+- Ошибка обязательной outbox-вставки пробрасывается наружу и откатывает connection,
+  token usage и уже созданные jobs. Отдельно доказано, что последующий rollback внешней
+  транзакции не оставляет ни одного эффекта.
+- Prisma schema, migration, dependencies, worker, `TelegramBotState.nextUpdateId`, UI,
+  routes и Appointment business logic не менялись. `getUpdates`, polling, leader
+  election, dispatcher, `sendMessage`, webhook и реальные Telegram-запросы отсутствуют.
+
+### Проверки
+
+- Узкий unit/security набор parser/dedupe/reminder schedule/processor: **55/55**, 4 файла.
+- Узкие PostgreSQL integration/concurrency наборы: **31/31**, 2 файла, в одной случайной
+  `zaprosto_test_*` базе с применением восьми существующих миграций и удалением базы.
+- Полный unit-набор: **585/585**, 45 файлов. Полный PostgreSQL runner: **1033/1033**,
+  66 файлов; он создал и удалил только одну случайную тестовую базу.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run test:unit`, `npm run test:postgres`, `npm run build`, `npx prisma validate`,
+  `docker compose config --quiet` и `git diff --check`. Build включал Prisma generate,
+  Next.js production build и worker TypeScript build.
+- Два независимых `PrismaClient` и dedicated `pg.Client` проверили реальные row/advisory
+  lock waits с bounded polling без `sleep`: гонки одного client token, двух chat, двух
+  AdminUser на один chat, rotation/revoke token, Appointment status и AdminUser activity.
+- Запрещающий global fetch spy не зафиксировал ни одного вызова. Canary-проверки не
+  находят raw token/hash, телефон, имя клиента или driver cause в result/error/payload/key.
+- Полный PostgreSQL runner завершился без ошибок; сохранились прежние предупреждения
+  `pg` о deprecated concurrent `client.query()`, не относящиеся к новым тестам.
+
+### Границы и продолжение
+
+06.3C реализует только транзакционное содержимое одного уже нормализованного update.
+Следующий этап 06.3D должен добавить single-leader polling, `getUpdates`, batch/offset
+protocol, атомарное продвижение `TelegramBotState.nextUpdateId` в той же внешней
+транзакции и подключение к worker. Отправка outbox остаётся отдельной последующей
+интеграцией. ADR-0014 остаётся `Proposed`; этап 06 целиком не завершён.

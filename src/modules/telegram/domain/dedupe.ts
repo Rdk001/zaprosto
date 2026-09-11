@@ -23,6 +23,14 @@ function nonNegativeSafeInteger(value: unknown): number {
   return parsed.data;
 }
 
+function nonNegativeInteger(value: unknown): string {
+  if (typeof value === "bigint") {
+    if (value < 0n) throw new TelegramDomainError("INVALID_DEDUPE_INPUT");
+    return value.toString();
+  }
+  return String(nonNegativeSafeInteger(value));
+}
+
 function checkedKey(value: string): string {
   if (value.length > TELEGRAM_DEDUPE_KEY_MAX_LENGTH) {
     throw new TelegramDomainError("INVALID_DEDUPE_INPUT");
@@ -41,20 +49,18 @@ export function buildAdminAppointmentCreatedDedupeKey(input: {
 }
 
 export function buildClientConnectionConfirmedDedupeKey(input: {
-  appointmentId: string;
   appointmentConnectionId: string;
 }): string {
   return checkedKey(
-    `client-connection-confirmed:v1:${canonicalUuid(input.appointmentId)}:c${canonicalUuid(input.appointmentConnectionId)}`,
+    `telegram:v1:appointment-connection:${canonicalUuid(input.appointmentConnectionId)}:confirmed`,
   );
 }
 
 export function buildAdminConnectionConfirmedDedupeKey(input: {
-  adminUserId: string;
   adminConnectionId: string;
 }): string {
   return checkedKey(
-    `admin-connection-confirmed:v1:${canonicalUuid(input.adminUserId)}:c${canonicalUuid(input.adminConnectionId)}`,
+    `telegram:v1:admin-connection:${canonicalUuid(input.adminConnectionId)}:confirmed`,
   );
 }
 
@@ -91,14 +97,15 @@ export function buildClientAppointmentChangedDedupeKey(input: {
 export function buildClientAppointmentReminderDedupeKey(input: {
   appointmentId: string;
   visitVersion: number;
-  reminderEpochMillis: number;
   appointmentConnectionId: string;
 }): string {
   return checkedKey(
-    `client-appointment-reminder:v1:${canonicalUuid(input.appointmentId)}:v${nonNegativeSafeInteger(input.visitVersion)}:at${nonNegativeSafeInteger(input.reminderEpochMillis)}:c${canonicalUuid(input.appointmentConnectionId)}`,
+    `telegram:v1:appointment:${canonicalUuid(input.appointmentId)}:version:${nonNegativeSafeInteger(input.visitVersion)}:connection:${canonicalUuid(input.appointmentConnectionId)}:reminder`,
   );
 }
 
-export function buildTelegramConnectionRejectedDedupeKey(input: { updateId: number }): string {
-  return checkedKey(`telegram-connection-rejected:v1:u${nonNegativeSafeInteger(input.updateId)}`);
+export function buildTelegramConnectionRejectedDedupeKey(input: {
+  updateId: number | bigint;
+}): string {
+  return checkedKey(`telegram:v1:update:${nonNegativeInteger(input.updateId)}:connection-rejected`);
 }

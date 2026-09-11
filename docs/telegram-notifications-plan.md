@@ -576,16 +576,16 @@ Snapshot нужен, чтобы сообщение о переносе верс�
 
 Префикс `v1` относится к формату dedupe key, а `v{n}` — к версии Appointment после события. Начальная версия новой записи — `0`.
 
-| Логическое сообщение            | `dedupeKey`                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Новая запись администратору     | `admin-appointment-created:v1:{appointmentId}:v{version}:c{adminConnectionId}`                                      |
-| Подключение клиента             | `client-connection-confirmed:v1:{appointmentId}:c{appointmentConnectionId}`                                         |
-| Подключение администратора      | `admin-connection-confirmed:v1:{adminUserId}:c{adminConnectionId}`                                                  |
-| Отмена администратору           | `admin-appointment-cancelled:v1:{appointmentId}:v{newVersion}:c{adminConnectionId}`                                 |
-| Административная отмена клиенту | `client-appointment-cancelled:v1:{appointmentId}:v{newVersion}:c{appointmentConnectionId}`                          |
-| Изменение визита клиенту        | `client-appointment-changed:v1:{appointmentId}:v{newVersion}:c{appointmentConnectionId}`                            |
-| Напоминание                     | `client-appointment-reminder:v1:{appointmentId}:v{visitVersion}:at{reminderEpochMillis}:c{appointmentConnectionId}` |
-| Нейтральный отказ на update     | `telegram-connection-rejected:v1:u{updateId}`                                                                       |
+| Логическое сообщение            | `dedupeKey`                                                                                    |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Новая запись администратору     | `admin-appointment-created:v1:{appointmentId}:v{version}:c{adminConnectionId}`                 |
+| Подключение клиента             | `telegram:v1:appointment-connection:<connectionId>:confirmed`                                  |
+| Подключение администратора      | `telegram:v1:admin-connection:<connectionId>:confirmed`                                        |
+| Отмена администратору           | `admin-appointment-cancelled:v1:{appointmentId}:v{newVersion}:c{adminConnectionId}`            |
+| Административная отмена клиенту | `client-appointment-cancelled:v1:{appointmentId}:v{newVersion}:c{appointmentConnectionId}`     |
+| Изменение визита клиенту        | `client-appointment-changed:v1:{appointmentId}:v{newVersion}:c{appointmentConnectionId}`       |
+| Напоминание                     | `telegram:v1:appointment:<appointmentId>:version:<version>:connection:<connectionId>:reminder` |
+| Нейтральный отказ на update     | `telegram:v1:update:<updateId>:connection-rejected`                                            |
 
 Тип, версия бизнес-события и connection identity являются частью ключа; идентификатор попытки и случайный job ID — нет. Поэтому retry использует ту же строку, replay producer упирается в UNIQUE, а новый администратор или новое добровольное подключение не получает сообщения, созданные для прежней связи.
 

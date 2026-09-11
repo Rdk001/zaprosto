@@ -12,9 +12,12 @@ describe("Telegram production entrypoint", () => {
       "TelegramLinkRepositoryError",
       "TelegramLinkService",
       "TelegramLinkServiceError",
+      "TelegramStartProcessorError",
       "createTelegramBotApi",
       "createTelegramFetchTransport",
       "parseTelegramRuntimeConfiguration",
+      "parseTelegramStartCommand",
+      "processTelegramStart",
       "verifyTelegramBotReadiness",
     ]);
     expect(entrypoint).not.toHaveProperty("FakeTelegramTransport");

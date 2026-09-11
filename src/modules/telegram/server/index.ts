@@ -5,6 +5,8 @@ export { TelegramLinkRepository, TelegramLinkRepositoryError } from "./link-repo
 export { TelegramLinkService, TelegramLinkServiceError } from "./link-service";
 export { verifyTelegramBotReadiness } from "./readiness-service";
 export { parseTelegramRuntimeConfiguration } from "./runtime-config";
+export { parseTelegramStartCommand } from "./start-command-parser";
+export { processTelegramStart, TelegramStartProcessorError } from "./start-processor";
 export type {
   TelegramBotApi,
   TelegramBotIdentity,
@@ -27,6 +29,8 @@ export type {
   TelegramLinkSuccess,
 } from "./link-service";
 export type { TelegramVerificationReason, TelegramVerificationResult } from "./readiness-service";
+export type { ParsedTelegramStart, TelegramStartParseResult } from "./start-command-parser";
+export type { TelegramStartOutcome } from "./start-processor";
 export type {
   TelegramEnvironment,
   TelegramRuntimeConfigErrorCode,
