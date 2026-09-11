@@ -1054,3 +1054,71 @@ sendMessage, Telegram UI и новые endpoints не реализованы.
 ссылок; 06.3C — обработка /start и создание connections/jobs; 06.3D — leader polling,
 offset protocol и интеграция worker.
 Этап 06 целиком не завершён, ADR-0014 остаётся Proposed. Commit и push не выполнялись.
+
+## Этап 06.3B — выпуск и отзыв одноразовых Telegram deep links (2026-09-10)
+
+Исходная чистая база: `fed4be688d065a1a4013cfca9c0297640fb4645d`; ветка `main`,
+`HEAD` и `origin/main` совпадали. Commit и push не выполнялись.
+
+### Реализовано
+
+- Добавлены отдельные Node/server-safe repository/service и узкие public/admin
+  boundaries для выпуска и идемпотентного отзыва клиентских и административных ссылок.
+  Boundaries требуют точный Origin, принимают только cancellation token либо текущий
+  session token и преобразуют любые исключения в безопасный `UNAVAILABLE` без логов.
+- Client target определяется только существующим purpose-neutral hash cancellation token.
+  После `Appointment FOR UPDATE` повторно проверяются hash, `SCHEDULED`, строго будущее
+  `startsAt` по PostgreSQL time и отсутствие active connection.
+- Admin target определяется только предварительно подтверждённой active session.
+  После `AdminUser FOR UPDATE` повторно проверяются `isActive`, session и совпадение
+  текущего AdminUser через shared-lock auth pattern. Внешний adminUserId не принимается.
+- Обе выдачи требуют положительную web readiness внутри транзакции. Verified username
+  возвращается repository вместе с успешным COMMIT и используется для прямого
+  `https://t.me/<username>?start=<parameter>`; redirect и URL приложения отсутствуют.
+- Raw credential создаётся до транзакции существующим генератором, не передаётся
+  repository и появляется только в успешном in-memory URL после COMMIT. PostgreSQL
+  хранит только lowercase 64-char purpose-separated SHA-256; потерянный ответ
+  восстанавливается только новой выдачей с rotation прежней unused строки.
+- Зафиксирован lock order:
+  `Appointment/AdminUser → installation rate row → purpose target rate row → прежний
+TelegramLinkToken → новый TelegramLinkToken`. Revoke блокирует тот же target, меняет
+  только unused/unrevoked строки своего purpose, не требует readiness/quota и не
+  отключает connection.
+- Telegram issuance использует существующую PostgreSQL `PublicRateLimit`: 5 попыток за
+  15 минут на domain-separated hash target UUID и 20 за 15 минут на общую installation
+  для client/admin. UPSERT атомарен, denied hits насыщаются, точная граница
+  `expiresAt <= clock_timestamp()` начинает новое окно. Keys не содержат UUID в
+  читаемом виде, cancellation/session/link token или их hashes.
+- Prisma schema, migration, worker, Appointment business logic, TelegramBotApi,
+  dispatcher, UI и существующие connection rows не менялись; новых зависимостей нет.
+
+### Проверки
+
+- Узкие unit/security tests: **12/12**, 5 файлов.
+- Узкие PostgreSQL integration/concurrency tests: **24/24**, 2 файла, каждый прогон в
+  случайной `zaprosto_test_*` базе с удалением только этой базы.
+- Два независимых PrismaClient и отдельная dedicated pg session доказали сериализацию
+  client/admin rotation, повторную проверку Appointment status, active client/admin
+  connection, AdminUser deactivation и session revoke после ожидания target lock.
+- Проверены условно потерянный ответ, новый raw credential без восстановления старого,
+  сохранение used token, client/admin purpose isolation, идемпотентный revoke, rollback
+  старого отзыва при ошибке до INSERT, target 5/15m, общая installation 20/15m,
+  конкурентные increments, exact boundary и действующие partial UNIQUE constraints.
+- Fetch во всех новых PostgreSQL tests заменён запрещающим spy; реальный Telegram token,
+  `api.telegram.org`, сеть, временный процесс и рабочая база не использовались.
+- Итоговый обязательный прогон: `npm run format`, `npm run format:check`,
+  `npm run lint`, `npm run typecheck`, **540/540** unit-тестов в 42 файлах,
+  **957/957** тестов полного PostgreSQL-runner в 61 файле, `npm run build`,
+  `npx prisma validate` и `docker compose config --quiet` — успешно. Полный
+  PostgreSQL-runner создал и удалил только одну случайную тестовую базу.
+
+### Границы и продолжение
+
+06.3B не добавляет UI/кнопки, Server Actions, HTTP routes, polling/`getUpdates`,
+обработку `/start`, потребление token, создание/отключение connections,
+confirmation/reminder jobs, outbox producers, dispatcher или `sendMessage`.
+
+Точка продолжения: 06.3C — обработка `/start`, создание Appointment/Admin connections
+и confirmation/reminder jobs; 06.3D — leader polling, offset protocol и интеграция
+worker. Этапы 06.3 и 06 целиком не завершены, ADR-0014 остаётся Proposed. Commit и push
+не выполнялись.

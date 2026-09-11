@@ -288,3 +288,62 @@ lastPollAt, поэтому до будущего успешного polling web 
 
 06.3A не подключает этот сервис к worker и не реализует advisory lock, getUpdates,
 offset, обработку команд, ссылки, connections, producer, dispatcher, UI или endpoint.
+
+## Выпуск и отзыв одноразовых ссылок (06.3B)
+
+`server/link-service.ts` генерирует существующим domain helper 32 случайных байта и
+purpose-separated SHA-256 до открытия транзакции. В repository передаётся только hash.
+После подтверждённого COMMIT service добавляет raw start parameter к единственному
+допустимому результату — прямому
+`https://t.me/<подтверждённый_username>?start=<start_parameter>`. Username возвращается
+repository из той же readiness-проверки, которая разрешила INSERT, поэтому вызывающий
+код не может подменить identity. Повторная выдача не восстанавливает прежний raw token:
+она создаёт новый credential и атомарно отзывает предыдущую unused/unrevoked строку.
+
+Клиентская операция принимает только существующий cancellation token, проверяет его
+строгой booking schema и ищет Appointment по существующему hash. В короткой
+ReadCommitted-транзакции Appointment блокируется `FOR UPDATE`; после ожидания заново
+проверяются hash, `SCHEDULED`, строгое `startsAt > clock_timestamp()` и отсутствие
+active Appointment connection. Malformed token даёт `INVALID_INPUT`, неизвестный —
+`NOT_FOUND`; ни один из них не создаёт rate-limit key.
+
+Административная операция принимает только server-side session token. Active session
+сначала определяет текущий AdminUser вне транзакции. Затем repository блокирует именно
+его строку, повторно проверяет `isActive` и удерживает session/AdminUser через
+существующий `getActiveAdminForShare` до COMMIT. Внешний `adminUserId` не принимается.
+Expired/revoked session не проходит, деактивация или отзыв session во время ожидания
+lock обнаруживаются повторной проверкой.
+
+Для обоих purpose после target lock проверяется web readiness: валидный настроенный
+username, совпадающая подтверждённая bot identity, отсутствие safe global error,
+свежие `lastVerifiedAt` и `lastPollAt`. HTTP и Telegram Bot API не вызываются.
+Порядок изменяющих блокировок фиксирован:
+`Appointment/AdminUser → installation rate row → purpose target rate row → прежний
+TelegramLinkToken → новый TelegramLinkToken`.
+
+Rate limit использует только `public_rate_limits` и PostgreSQL
+`clock_timestamp()::timestamptz(3)`: 5 попыток на purpose-separated target и 20 общих
+клиентских/административных попыток на installation за 15 минут. Target key содержит
+domain-separated SHA-256 UUID, но не UUID в читаемом виде и не cancellation/session/link
+token либо их hash. UPSERT атомарен между процессами; denied counter насыщается на
+`maximum + 1`, а точная граница `expiresAt <= now` начинает новое окно. Отзыв quota
+не расходует.
+
+Revoke использует тот же target lock и авторизацию, меняет только соответствующие
+unused/unrevoked purpose rows, идемпотентен, не требует readiness и не отключает
+connection. Repository DTO содержит только закрытый outcome, verified username и
+`expiresAt` успешной выдачи; raw token и target id наружу не читаются.
+
+Узкие проверки 06.3B: 12/12 unit-тестов и 24/24 PostgreSQL
+integration/concurrency-теста на случайных базах. Проверены client/admin rotation,
+условно потерянный ответ, реальное ожидание target row lock разными DB sessions,
+конкурентные status/connection/session/account изменения, общая installation quota,
+target quota, rollback перед INSERT, exact 15-minute boundary и partial UNIQUE как
+последняя защита. Реальная Telegram-сеть и credentials не использовались.
+Полный regression-прогон завершился 540/540 unit и 957/957 PostgreSQL-runner tests;
+production build, Prisma validate и Docker Compose config прошли.
+
+06.3B не добавляет UI, Server Actions, HTTP routes, polling, `getUpdates`, обработку
+`/start`, connections, confirmation/reminder jobs, outbox producers, dispatcher или
+`sendMessage`. Следующая точка: 06.3C — `/start`, Appointment/Admin connections и
+confirmation/reminder jobs; затем 06.3D — leader polling, offset protocol и worker.
