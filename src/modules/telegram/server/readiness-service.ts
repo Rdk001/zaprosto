@@ -60,6 +60,7 @@ export async function verifyTelegramBotReadiness(input: {
   api: TelegramBotApi;
   state: TelegramBotStateStore;
   clock?: () => Date;
+  signal?: AbortSignal;
 }): Promise<TelegramVerificationResult> {
   const { configuration, api, state } = input;
 
@@ -76,9 +77,10 @@ export async function verifyTelegramBotReadiness(input: {
   const botUsername = configuration.botUsername;
   let identity: Awaited<ReturnType<TelegramBotApi["getMe"]>>;
   try {
-    identity = await api.getMe();
+    identity = await api.getMe({ signal: input.signal });
   } catch (error) {
     const code = normalizedAdapterCode(error);
+    if (input.signal?.aborted) return notReady(code, configuration.botUsername);
     if (!(await persistError(state, code)))
       return notReady("BOT_STATE_STORAGE_FAILURE", botUsername);
     return notReady(code, botUsername);
@@ -111,9 +113,10 @@ export async function verifyTelegramBotReadiness(input: {
 
   let webhook;
   try {
-    webhook = await api.getWebhookInfo();
+    webhook = await api.getWebhookInfo({ signal: input.signal });
   } catch (error) {
     const code = normalizedAdapterCode(error);
+    if (input.signal?.aborted) return notReady(code, botUsername);
     if (!(await persistError(state, code)))
       return notReady("BOT_STATE_STORAGE_FAILURE", botUsername);
     return notReady(code, botUsername);

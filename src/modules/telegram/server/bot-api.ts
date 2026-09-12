@@ -205,6 +205,10 @@ function classifiedTelegramError(
     return apiError(operation, "TELEGRAM_5XX");
   }
 
+  if (operation === "getUpdates" && (status === 409 || code === 409)) {
+    return apiError(operation, "POLLING_CONFLICT");
+  }
+
   if (operation === "sendMessage") {
     if (/\bchat not found\b/i.test(description)) {
       return apiError(operation, "CHAT_NOT_FOUND");

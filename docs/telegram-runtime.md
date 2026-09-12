@@ -454,3 +454,61 @@ validate, Docker Compose config и `git diff --check` прошли.
 offset/`nextUpdateId`, worker integration, dispatcher, `sendMessage`, webhook, UI или
 routes. Эти границы сохраняются для 06.3D и последующих этапов. ADR-0014 остаётся
 `Proposed`.
+
+## Single-leader polling и транзакционный offset (06.3D)
+
+`worker` запускает отдельный `TelegramPollingOrchestrator`. При полностью отключённой
+Telegram-конфигурации процесс остаётся жив, не создаёт Bot API и раз в 60 секунд
+перепроверяет конфигурацию. `INCOMPLETE`, `INVALID`, несовпадение identity и активный
+webhook дают только безопасный код и тот же ограниченный readiness retry. Worker никогда
+не вызывает `deleteWebhook`.
+
+Право на `getUpdates` выдаёт только session-level advisory lock `(526008, 61)`.
+`PostgresTelegramPollingLeaderSource` удерживает его на выделенном `pg.PoolClient`.
+Проверка после ответа и перед каждым update читает `pg_locks` для
+`pg_backend_pid()`, `classid/objid` двухчастного ключа и `objsubid = 2`; повторный
+`pg_try_advisory_lock` не используется. События dedicated connection `error/end`
+сразу инвалидируют session и abort-ят long poll. Ответ, пришедший после потери lock,
+отбрасывается. Healthy shutdown явно снимает lock до возврата connection в pool,
+потерянная connection уничтожается.
+
+Лидер перед polling и затем каждые 60 секунд проходит существующий
+`verifyTelegramBotReadiness`. Каждый запрос использует сохранённый
+`TelegramBotState.nextUpdateId`, `limit = 100`, runtime timeout и
+`allowed_updates = ["message"]`. Для номера подряд идущей ошибки `n`, начиная с нуля,
+base delay равен `min(30 000, 1 000 * 2^min(n, 5))` миллисекунд. К нему добавляется
+jitter в диапазоне от `lowerBound = max(1 000, floor(baseDelay * 0,75))` до `baseDelay`:
+`lowerBound + floor((baseDelay - lowerBound) * clamp(rng, 0, 1))`. Поэтому задержка
+всегда остаётся в диапазоне 1–30 секунд, а на cap разные RNG дают 22,5–30 секунд и
+worker не синхронизируют retry. Non-finite RNG предсказуемо выбирает `lowerBound`,
+а успешный poll сбрасывает счётчик. RNG внедрён
+в orchestrator и детерминирован в тестах. HTTP 409 нормализуется в `POLLING_CONFLICT`, после чего readiness повторно
+проверяет webhook без автоматического переключения режима.
+
+Batch копируется, сортируется по `updateId` и обрабатывается последовательно. Каждая
+транзакция блокирует singleton через `SELECT ... FOR UPDATE` и требует точного
+совпадения с локальным `expectedStoredOffset`. Replay `updateId < nextUpdateId`
+не вызывает parser/processor и не меняет offset. Gap допустим; новый или проигнорированный
+update фиксирует `nextUpdateId = updateId + 1`. Валидный `/start` передаётся
+`processTelegramStart` с тем же `Prisma.TransactionClient`, поэтому connection,
+token usage, outbox jobs, offset, DB-time `lastPollAt` и очистка error code входят в
+один commit. Ошибка откатывает весь update и останавливает остаток batch. Пустой batch
+обновляет только DB-time `lastPollAt` после того же lock/equality check.
+
+SIGINT/SIGTERM идемпотентно abort-ят ожидание/long poll, дожидаются выхода оркестратора,
+освобождают leader connection/pool и отключают Prisma. Сразу после создания `pg.Pool`
+регистрируется обработчик idle-client `error`: он не запускает повторный shutdown и
+логирует только `LEADER_SESSION_FAILURE`, без объекта ошибки и connection details.
+Production worker собирается в единый ESM artifact прямой точно зафиксированной
+devDependency `esbuild@0.28.2`, вызываемой через npm script, чтобы Node runtime не зависел от
+extensionless imports сгенерированного Prisma TypeScript client.
+
+Узкие проверки исправлений 06.3D: 24/24 unit-теста leader/orchestrator/worker entrypoint
+и 10/10 PostgreSQL polling integration-тестов. Полный unit-набор содержит 609 тестов,
+полный изолированный PostgreSQL runner — 1067 тестов, E2E — 133 теста. Реальный Telegram, Bot Token,
+`deleteWebhook` и production advisory key в integration tests не использовались;
+тестовый lock key внедряется отдельно и обязательно освобождается.
+
+06.3D не добавляет dispatcher, обработку `NotificationOutbox`, `sendMessage`, rate
+limiter отправки, business producers, UI, routes или webhook endpoint. Prisma schema и
+миграции не менялись.

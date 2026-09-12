@@ -1203,3 +1203,68 @@ worker. Этапы 06.3 и 06 целиком не завершены, ADR-0014 �
 protocol, атомарное продвижение `TelegramBotState.nextUpdateId` в той же внешней
 транзакции и подключение к worker. Отправка outbox остаётся отдельной последующей
 интеграцией. ADR-0014 остаётся `Proposed`; этап 06 целиком не завершён.
+
+## Этап 06.3D — single-leader Telegram polling и offset protocol (2026-09-11)
+
+Исходная чистая база: `5607ad55fcc50883bb2eaa26cfd89392cc2df78a`; ветка `main`,
+`HEAD` и `origin/main` совпадали. Commit и push не выполнялись.
+
+### Реализовано
+
+- Добавлен отдельный leader-session boundary на реальном dedicated `pg.PoolClient` с
+  фиксированным production advisory key `(526008, 61)` и внедряемым тестовым key.
+  Non-leader не создаёт Bot API и не вызывает `getUpdates`. После ответа и перед каждым
+  update владение подтверждается запросом `pg_locks` для текущего backend PID без
+  реентерабельного `pg_try_advisory_lock`.
+- `error/end` dedicated connection немедленно инвалидируют локальное лидерство и
+  abort-ят long poll. Stale response после потери connection/lock отбрасывается до Prisma
+  effects. Healthy close явно снимает lock до release; потерянная connection удаляется
+  из pool. После потери лидерства действует bounded retry, без tight loop.
+- Добавлен polling orchestrator с существующей runtime-конфигурацией и
+  `verifyTelegramBotReadiness`: initial и периодический `getMe`/identity/webhook check,
+  запрет polling для DISABLED/INCOMPLETE/INVALID/mismatch/webhook и отсутствие
+  `deleteWebhook`. DISABLED worker остаётся жив без Telegram network.
+- `getUpdates` получает сохранённый offset, `limit = 100`, runtime timeout,
+  `allowedUpdates = ["message"]` и объединённый shutdown/leader-loss AbortSignal.
+  Read failures получают exponential base до 30 секунд и внедряемый bounded negative
+  jitter в диапазоне `max(1 с, floor(base * 0,75))..base`, который сохраняется на cap;
+  success сбрасывает счётчик. HTTP 409
+  нормализуется в безопасный `POLLING_CONFLICT`, повторно запускает readiness и не
+  удаляет webhook.
+- Batch сортируется по `updateId` и обрабатывается строго последовательно. Отдельный
+  Prisma store в каждой транзакции блокирует `TelegramBotState FOR UPDATE` и сравнивает
+  точный `expectedStoredOffset`. Несовпадение откатывает текущую транзакцию, фиксирует
+  `POLL_OFFSET_CONFLICT` отдельной безопасной записью и останавливает batch.
+- Replay не вызывает parser/processor и не двигает offset; duplicate после первого
+  commit естественно становится replay. Gap допустим. Ignored update подтверждается
+  `updateId + 1`. Для валидного `/start` processor, connection, token usage, jobs,
+  offset, DB-time `lastPollAt` и очистка `lastErrorCode` коммитятся одной транзакцией.
+  Ошибка до offset update откатывает все эффекты и блокирует следующие updates.
+  Пустой batch обновляет `lastPollAt` только при неизменном requested offset.
+- `src/worker.ts` стал минимальным composition root и владеет Prisma, pg pool,
+  orchestrator и идемпотентным SIGINT/SIGTERM shutdown. Idle-client `pg.Pool#error`
+  перехватывается сразу после создания pool и логирует только безопасный
+  `LEADER_SESSION_FAILURE`, не запуская shutdown. Worker build создаёт единый ESM bundle
+  через прямую точно зафиксированную devDependency `esbuild@0.28.2`; Prisma schema и
+  migrations не менялись.
+
+### Проверки
+
+- Узкий unit-набор leader/orchestrator/Bot API/readiness/exports: **60/60**, 5 файлов.
+- Узкий PostgreSQL polling-набор: **10/10**, включая две реальные pg sessions,
+  release и `pg_terminate_backend`, re-acquire, atomic commit/rollback, conflict,
+  out-of-order, gap, replay, duplicate, ignored, empty batch и stop-on-error.
+- Полный unit-набор: **606/606**. Полный PostgreSQL runner с локальным
+  `PUBLIC_ORIGIN`: **1064/1064**, 69 файлов, в одной случайной автоматически удалённой
+  `zaprosto_test_*` базе. E2E: **133/133**.
+- Bundled worker smoke-test без Telegram env подтвердил живой idle process и чистый
+  `WORKER_STARTED → SIGINT → WORKER_STOPPED` shutdown без Telegram network.
+- Реальный Telegram/Bot Token, production DB, `sendMessage` и `deleteWebhook` не
+  использовались. Сохранились прежние non-blocking предупреждения `pg` о deprecated
+  concurrent `client.query()` и существующие warnings E2E web server.
+
+### Границы и продолжение
+
+06.3D не реализует dispatcher/`NotificationOutbox` claim, реальную отправку
+`sendMessage`, rate limiter отправки, business producers, UI, routes, webhook endpoint
+или operator bot rotation. Этап 06 целиком не завершён; ADR-0014 остаётся `Proposed`.

@@ -1,12 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": false,
+    "noEmit": true,
     "incremental": false,
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "outDir": ".worker-dist",
-    "rootDir": "src",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "types": ["node"]
   },
   "include": ["src/worker.ts"]

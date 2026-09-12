@@ -5,6 +5,9 @@ describe("Telegram production entrypoint", () => {
     const entrypoint = await import("./index");
 
     expect(Object.keys(entrypoint).sort()).toEqual([
+      "PostgresTelegramPollingLeaderSource",
+      "PrismaTelegramPollingStore",
+      "TELEGRAM_POLLING_ADVISORY_LOCK_KEY",
       "TelegramBotApiError",
       "TelegramBotStateError",
       "TelegramBotStateRepository",
@@ -12,12 +15,17 @@ describe("Telegram production entrypoint", () => {
       "TelegramLinkRepositoryError",
       "TelegramLinkService",
       "TelegramLinkServiceError",
+      "TelegramPollingOrchestrator",
+      "TelegramPollingStoreError",
       "TelegramStartProcessorError",
+      "calculateTelegramPollingBackoffMs",
       "createTelegramBotApi",
       "createTelegramFetchTransport",
       "parseTelegramRuntimeConfiguration",
       "parseTelegramStartCommand",
       "processTelegramStart",
+      "processTelegramUpdateBatch",
+      "registerTelegramWorkerPoolErrorHandler",
       "verifyTelegramBotReadiness",
     ]);
     expect(entrypoint).not.toHaveProperty("FakeTelegramTransport");

@@ -3,10 +3,21 @@ export { TelegramBotStateError, TelegramBotStateRepository } from "./bot-state-r
 export { createTelegramFetchTransport } from "./fetch-transport";
 export { TelegramLinkRepository, TelegramLinkRepositoryError } from "./link-repository";
 export { TelegramLinkService, TelegramLinkServiceError } from "./link-service";
+export {
+  PostgresTelegramPollingLeaderSource,
+  TELEGRAM_POLLING_ADVISORY_LOCK_KEY,
+} from "./polling-leader";
+export {
+  calculateTelegramPollingBackoffMs,
+  processTelegramUpdateBatch,
+  TelegramPollingOrchestrator,
+} from "./polling-orchestrator";
+export { PrismaTelegramPollingStore, TelegramPollingStoreError } from "./polling-store";
 export { verifyTelegramBotReadiness } from "./readiness-service";
 export { parseTelegramRuntimeConfiguration } from "./runtime-config";
 export { parseTelegramStartCommand } from "./start-command-parser";
 export { processTelegramStart, TelegramStartProcessorError } from "./start-processor";
+export { registerTelegramWorkerPoolErrorHandler } from "./worker-pool";
 export type {
   TelegramBotApi,
   TelegramBotIdentity,
@@ -28,6 +39,17 @@ export type {
   TelegramLinkOperations,
   TelegramLinkSuccess,
 } from "./link-service";
+export type {
+  TelegramPollingAdvisoryLockKey,
+  TelegramPollingLeaderSession,
+  TelegramPollingLeaderSource,
+} from "./polling-leader";
+export type {
+  TelegramBatchResult,
+  TelegramPollingDiagnosticCode,
+  TelegramPollingLogger,
+} from "./polling-orchestrator";
+export type { TelegramPollCommitResult, TelegramPollingStore } from "./polling-store";
 export type { TelegramVerificationReason, TelegramVerificationResult } from "./readiness-service";
 export type { ParsedTelegramStart, TelegramStartParseResult } from "./start-command-parser";
 export type { TelegramStartOutcome } from "./start-processor";

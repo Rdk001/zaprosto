@@ -65,6 +65,21 @@ afterEach(() => {
 });
 
 describe("TelegramBotApi failures", () => {
+  it("classifies getUpdates HTTP 409 without retaining Telegram description", async () => {
+    const description = "Conflict: terminated by another getUpdates request SECRET";
+    const { api } = apiFor(telegramError(409, 409, description));
+    const error = await captureBotApiError(
+      api.getUpdates({
+        offset: 0n,
+        limit: 100,
+        timeoutSeconds: 30,
+        allowedUpdates: ["message"],
+      }),
+    );
+    expect(error).toMatchObject({ code: "POLLING_CONFLICT", operation: "getUpdates" });
+    expect(JSON.stringify(error)).not.toContain(description);
+  });
+
   it.each([
     [400, 400, "Bad Request: unknown", "INVALID_REQUEST"],
     [400, 400, "Bad Request: chat not found", "CHAT_NOT_FOUND"],
