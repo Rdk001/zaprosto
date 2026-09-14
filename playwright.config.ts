@@ -14,6 +14,9 @@ export default defineConfig({
     url: `http://localhost:${port}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,
-    env: { PUBLIC_ORIGIN: `http://localhost:${port}` },
+    env: {
+      PUBLIC_ORIGIN: `http://localhost:${port}`,
+      TELEGRAM_BOT_USERNAME: "zaprosto_test_bot",
+    },
   },
 });

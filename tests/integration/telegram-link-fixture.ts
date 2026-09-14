@@ -129,6 +129,14 @@ export async function createTelegramLinkFixture(database: PrismaClient) {
   }
 
   async function cleanupRows() {
+    await database.notificationOutbox.deleteMany({
+      where: {
+        OR: [
+          { appointment: { serviceId: service.id } },
+          { appointmentConnection: { appointment: { serviceId: service.id } } },
+        ],
+      },
+    });
     await database.telegramLinkToken.deleteMany({
       where: {
         OR: [

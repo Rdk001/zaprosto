@@ -1,4 +1,9 @@
 export { createTelegramBotApi, TelegramBotApiError } from "./bot-api";
+export {
+  AppointmentTelegramRepository,
+  AppointmentTelegramRepositoryError,
+} from "./appointment-connection-repository";
+export { AppointmentTelegramService } from "./appointment-connection-service";
 export { TelegramBotStateError, TelegramBotStateRepository } from "./bot-state-repository";
 export { createTelegramFetchTransport } from "./fetch-transport";
 export { TelegramLinkRepository, TelegramLinkRepositoryError } from "./link-repository";
@@ -18,6 +23,17 @@ export { parseTelegramRuntimeConfiguration } from "./runtime-config";
 export { parseTelegramStartCommand } from "./start-command-parser";
 export { processTelegramStart, TelegramStartProcessorError } from "./start-processor";
 export { registerTelegramWorkerPoolErrorHandler } from "./worker-pool";
+export type {
+  AppointmentTelegramDisconnectResult,
+  AppointmentTelegramReadResult,
+  AppointmentTelegramState,
+  AppointmentTelegramStore,
+} from "./appointment-connection-repository";
+export type {
+  AppointmentTelegramDisconnectServiceResult,
+  AppointmentTelegramOperations,
+  AppointmentTelegramStateResult,
+} from "./appointment-connection-service";
 export type {
   TelegramBotApi,
   TelegramBotIdentity,

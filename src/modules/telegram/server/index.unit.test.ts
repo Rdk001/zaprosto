@@ -5,6 +5,9 @@ describe("Telegram production entrypoint", () => {
     const entrypoint = await import("./index");
 
     expect(Object.keys(entrypoint).sort()).toEqual([
+      "AppointmentTelegramRepository",
+      "AppointmentTelegramRepositoryError",
+      "AppointmentTelegramService",
       "PostgresTelegramPollingLeaderSource",
       "PrismaTelegramPollingStore",
       "TELEGRAM_POLLING_ADVISORY_LOCK_KEY",

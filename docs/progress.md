@@ -1268,3 +1268,74 @@ protocol, атомарное продвижение `TelegramBotState.nextUpdate
 06.3D не реализует dispatcher/`NotificationOutbox` claim, реальную отправку
 `sendMessage`, rate limiter отправки, business producers, UI, routes, webhook endpoint
 или operator bot rotation. Этап 06 целиком не завершён; ADR-0014 остаётся `Proposed`.
+
+## Этап 06.3E — клиентское Telegram-подключение Appointment (2026-09-14)
+
+Исходная чистая база: `9e5ab020eb6cb1605761e3a427504cce5567e56a`; ветка `main`,
+`HEAD` и `origin/main` совпадали. Commit и push не выполнялись.
+
+### Реализовано
+
+- Добавлена строгая read-модель по cancellation token. Service runtime-валидирует token,
+  вычисляет hash в памяти и передаёт repository только hash. Repository не расходует
+  rate limit, использует PostgreSQL `clock_timestamp()` и возвращает только
+  `AVAILABLE`, `CONNECTED`, `UNAVAILABLE` или закрытый `NOT_FOUND`.
+  `CONNECTED` имеет приоритет над статусом/временем Appointment и readiness;
+  `AVAILABLE` требует будущую `SCHEDULED` запись, отсутствие active connection и
+  свежую web-readiness. Telegram/connection ids и hashes наружу не выходят.
+- Добавлен транзакционный disconnect. Порядок блокировок начинается с общего для
+  issue/revoke/`/start` `Appointment FOR UPDATE`, затем блокируется active
+  `AppointmentTelegramConnection`. После чтения DB time отзываются все unused tokens,
+  connection получает `disabledAt` и `USER_DISCONNECTED`, а существующий
+  `invalidateTelegramOutbox` вызывается с точным target
+  `APPOINTMENT_CONNECTION` и кодом `CONNECTION_DISABLED`. PENDING jobs становятся
+  CANCELLED, PROCESSING получают fencing, terminal jobs и jobs других connections не
+  меняются. Повторный disconnect идемпотентен и всё равно отзывает unused tokens.
+- Public composition root собирает Prisma, `parseTelegramWebConfiguration`,
+  `TelegramLinkRepository/Service`, Appointment Telegram repository/service и
+  существующую public boundary. Добавлены Server Actions чтения, issue, revoke и
+  disconnect. Все mutations проверяют Origin; исключения нормализуются в безопасный
+  `UNAVAILABLE` без логирования исходной ошибки.
+- В `AppointmentView` встроен отдельный клиентский
+  `AppointmentTelegramControls`. Cancellation token остаётся только в памяти client
+  component и передаётся Server Action; он не попадает в pathname/query/cookie/RSC props,
+  DOM attributes или React key. Raw start token существует только внутри текущей
+  `https://t.me/<bot>?start=<token>` ссылки в React state, не сохраняется в browser
+  storage/history и сбрасывается при смене fragment.
+- UI поддерживает loading, unavailable, available, issued, connected, revoke,
+  rate-limit, disconnect confirmation и unknown outcome. После issue/revoke/disconnect
+  перечитывается фактическое состояние. `ALREADY_CONNECTED` запускает refresh,
+  `APPOINTMENT_NOT_ELIGIBLE/TELEGRAM_NOT_READY` скрывают недоступное подключение,
+  `RATE_LIMITED` даёт спокойное сообщение. Автоматического polling нет; используется
+  явная кнопка «Обновить статус». Внешняя ссылка имеет `rel="noreferrer"`.
+- Каждый async request получает generation; ответ применяется только к текущему
+  generation. Смена fragment делает старую deep link невидимой по owner-token и
+  инвалидирует незавершённые операции. Повторные submits блокируются.
+- Prisma schema, миграции и зависимости не менялись. Административный Telegram UI,
+  dispatcher, `sendMessage`, business events, webhook и browser polling не добавлялись.
+
+### Проверки
+
+- Узкий unit-набор service/boundary/UI: **9/9**, 3 файла. Узкий PostgreSQL-набор
+  read/disconnect/concurrency: **8/8**, 1 файл. Отдельный Telegram E2E happy path:
+  **1/1**.
+- Полный unit-набор: **616/616**, 50 файлов. Полный PostgreSQL runner:
+  **1082/1082**, 73 файла. Полный Playwright E2E: **134/134**.
+- E2E выпустил deep link только в памяти теста, прогнал raw start parameter через
+  существующие parser/processor без Telegram API, подтвердил `CONNECTED`, явный
+  disconnect, новую доступность подключения и точную инвалидацию jobs старой connection.
+- Запрещающий fetch spy в PostgreSQL-наборах не зафиксировал внешних вызовов.
+  Проверены rollback при ошибке invalidation, Start/revoke, Start/disconnect,
+  идемпотентный disconnect и переподключение новой immutable connection row.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run test:unit`, `npm run test:postgres`, `npm run test:e2e`,
+  `npm run build`, `npx prisma validate`, `docker compose config --quiet` и
+  `git diff --check`. После runner не осталось `zaprosto_test_*` баз и production
+  advisory lock `(526008, 61)`.
+
+### Границы и продолжение
+
+06.3E не добавляет административный Telegram UI, dispatcher/`sendMessage`, business
+producers 06.4, webhook или автоматический browser polling. Следующий клиентский или
+worker-этап должен сохранять connection identity jobs и существующий fencing-контракт.
+ADR-0014 остаётся `Proposed`; этап 06 целиком не завершён.

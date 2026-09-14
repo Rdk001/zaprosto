@@ -4,6 +4,7 @@ import { clientAppointments } from "../../modules/appointments/server";
 import { prisma } from "../db/prisma";
 import { createPublicBoundary } from "./boundary";
 import { createRateLimiter } from "./security";
+export { publicTelegram } from "./telegram";
 export const publicBooking = createPublicBoundary({
   booking,
   appointments: clientAppointments,

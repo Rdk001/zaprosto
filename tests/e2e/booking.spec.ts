@@ -6,17 +6,33 @@ import { createPrismaClient } from "../../src/server/db/create-prisma-client";
 import { createBookingService } from "../../src/modules/booking/server/booking-service";
 import { prepareBookingAttempt } from "../../src/modules/booking/server/booking-security";
 import { getLocalDayInterval } from "../../src/modules/scheduling/time/business-time";
+import { parseTelegramStartCommand } from "../../src/modules/telegram/server/start-command-parser";
+import { processTelegramStart } from "../../src/modules/telegram/server/start-processor";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 if (!databaseUrl || !new URL(databaseUrl).pathname.startsWith("/zaprosto_test_"))
   throw new Error("E2E requires the isolated runner");
 const db = createPrismaClient(databaseUrl);
 test.beforeEach(async () => {
+  await db.notificationOutbox.deleteMany();
+  await db.telegramLinkToken.deleteMany();
+  await db.appointmentTelegramConnection.deleteMany();
   await db.appointmentStatusHistory.deleteMany();
   await db.appointment.deleteMany();
   await db.bookingRequest.deleteMany();
   await db.publicRateLimit.deleteMany();
   await db.scheduleException.deleteMany();
+  await db.telegramBotState.update({
+    where: { id: 1 },
+    data: {
+      botUserId: null,
+      botUsername: null,
+      nextUpdateId: 0n,
+      lastVerifiedAt: null,
+      lastPollAt: null,
+      lastErrorCode: null,
+    },
+  });
 });
 test.afterAll(async () => {
   await db.$disconnect();
@@ -68,6 +84,100 @@ test("конкретный мастер, подтверждение и явна�
     page.getByText("Эта запись уже отменена. Повторная отмена не требуется."),
   ).toBeVisible();
   expect(await db.appointmentStatusHistory.count({ where: { newStatus: "CANCELLED" } })).toBe(1);
+});
+test("клиент подключает и отключает Telegram по защищённой странице", async ({ page }) => {
+  await toTime(page);
+  await review(page);
+  await create(page);
+  const appointmentHref = await page
+    .getByRole("link", { name: "Открыть мою запись ↗" })
+    .getAttribute("href");
+  await db.$executeRaw`
+    UPDATE telegram_bot_state
+    SET bot_user_id = 5000000001,
+        bot_username = 'zaprosto_test_bot',
+        last_verified_at = clock_timestamp(),
+        last_poll_at = clock_timestamp(),
+        last_error_code = NULL
+    WHERE id = 1
+  `;
+
+  await page.goto(appointmentHref!);
+  await expect(page.getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
+  await page.getByRole("button", { name: "Подключить Telegram" }).click();
+  const telegramHref = await page
+    .getByRole("link", { name: "Открыть Telegram" })
+    .getAttribute("href");
+  expect(telegramHref).toMatch(/^https:\/\/t\.me\/zaprosto_test_bot\?start=c_[A-Za-z0-9_-]{43}$/);
+  const startParameter = new URL(telegramHref!).searchParams.get("start")!;
+  expect(page.url()).not.toContain(startParameter);
+  const browserStorage = await page.evaluate(() => ({
+    local: Object.values(localStorage),
+    session: Object.values(sessionStorage),
+    cookies: document.cookie,
+  }));
+  expect(JSON.stringify(browserStorage)).not.toContain(startParameter);
+
+  const parsed = parseTelegramStartCommand(
+    {
+      updateId: 8_000_000_001n,
+      message: {
+        messageId: 1n,
+        from: { id: 7_000_000_001n, isBot: false },
+        dateUnixSeconds: Math.floor(Date.now() / 1000),
+        chat: { id: 7_000_000_001n, type: "private" },
+        text: `/start ${startParameter}`,
+      },
+    },
+    "zaprosto_test_bot",
+  );
+  expect(parsed.kind).toBe("PARSED");
+  if (parsed.kind !== "PARSED") throw new Error("Expected parsed Telegram Start");
+  await expect(
+    db.$transaction((tx) => processTelegramStart(tx, parsed.value), {
+      isolationLevel: "ReadCommitted",
+      maxWait: 5_000,
+      timeout: 10_000,
+    }),
+  ).resolves.toEqual({ kind: "CONNECTED" });
+
+  await page.getByRole("button", { name: "Обновить статус" }).first().click();
+  await expect(page.getByRole("heading", { name: "Telegram подключён" })).toBeVisible();
+  const appointment = await db.appointment.findFirstOrThrow();
+  const connection = await db.appointmentTelegramConnection.findFirstOrThrow({
+    where: { appointmentId: appointment.id, disabledAt: null },
+  });
+  const jobIds = (
+    await db.notificationOutbox.findMany({
+      where: { appointmentConnectionId: connection.id },
+      select: { id: true },
+    })
+  ).map(({ id }) => id);
+  expect(jobIds.length).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Отключить Telegram", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Да, отключить Telegram" })).toBeVisible();
+  expect(
+    await db.appointmentTelegramConnection.count({
+      where: { appointmentId: appointment.id, disabledAt: null },
+    }),
+  ).toBe(1);
+  await page.getByRole("button", { name: "Да, отключить Telegram" }).click();
+  await expect(page.getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
+
+  await expect(
+    db.appointmentTelegramConnection.findUniqueOrThrow({ where: { id: connection.id } }),
+  ).resolves.toMatchObject({
+    disabledReason: "USER_DISCONNECTED",
+  });
+  const jobs = await db.notificationOutbox.findMany({ where: { id: { in: jobIds } } });
+  expect(jobs).toHaveLength(jobIds.length);
+  expect(
+    jobs.every(
+      ({ status, invalidationCode }) =>
+        status === "CANCELLED" && invalidationCode === "CONNECTION_DISABLED",
+    ),
+  ).toBe(true);
 });
 test("любой мастер назначается сервером, телефон с +7", async ({ page }) => {
   await toTime(page, true);

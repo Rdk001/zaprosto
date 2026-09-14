@@ -5,6 +5,7 @@ import { startTransition, useCallback, useEffect, useRef, useState } from "react
 import { bookingTokenSchema } from "../../modules/booking/domain/booking-input";
 import { lookupAppointmentAction, cancelBookingAction } from "../../app/actions";
 import { Confirmation, statusLabels } from "./confirmation";
+import { AppointmentTelegramControls } from "./appointment-telegram-controls";
 
 type Result = Awaited<ReturnType<typeof lookupAppointmentAction>>;
 export function AppointmentView() {
@@ -130,6 +131,7 @@ export function AppointmentView() {
             timeZone={result.timeZone}
             token={token}
           />
+          <AppointmentTelegramControls token={token} />
           <section className="panel cancellation">
             <div className="section-title">
               <h2>Планы изменились?</h2>
