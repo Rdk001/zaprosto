@@ -3,7 +3,8 @@
 export function AdminNavigation({
   current,
 }: {
-  current: "home" | "services" | "masters" | "schedule" | "settings" | "appointments";
+  current:
+    "home" | "services" | "masters" | "schedule" | "settings" | "appointments" | "notifications";
 }) {
   return (
     <nav className="admin-nav" aria-label="Административные разделы">
@@ -24,6 +25,12 @@ export function AdminNavigation({
       </a>
       <a href="/admin/settings" aria-current={current === "settings" ? "page" : undefined}>
         Настройки
+      </a>
+      <a
+        href="/admin/notifications"
+        aria-current={current === "notifications" ? "page" : undefined}
+      >
+        Уведомления
       </a>
     </nav>
   );

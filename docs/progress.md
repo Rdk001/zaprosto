@@ -1339,3 +1339,47 @@ protocol, атомарное продвижение `TelegramBotState.nextUpdate
 producers 06.4, webhook или автоматический browser polling. Следующий клиентский или
 worker-этап должен сохранять connection identity jobs и существующий fencing-контракт.
 ADR-0014 остаётся `Proposed`; этап 06 целиком не завершён.
+
+## Этап 06.3F — самостоятельное административное Telegram-подключение (2026-09-15)
+
+Исходный commit: `b002ce280510f82508e1b38449c6288e47a96558`. Работа выполнена в
+текущем дереве без commit и push.
+
+### Реализовано
+
+- Добавлены admin read-state, server-only composition root и безопасное чтение HttpOnly
+  session cookie в zero-argument Server Actions. Read не зависит от Origin; issue,
+  revoke и disconnect защищены точным сравнением Origin и безопасно нормализуют
+  исключения в `UNAVAILABLE`.
+- Выпуск и отзыв административной deep link используют существующий link service.
+  Страница `/admin/notifications` добавлена в навигацию и закрыта действующей admin
+  сессией. Raw start token хранится только в памяти Client Component; reload его не
+  восстанавливает, stale responses отбрасываются по generation, повторные submits
+  блокируются, автоматического polling нет.
+- Транзакционный disconnect повторно авторизует admin после `AdminUser FOR UPDATE`,
+  блокирует active connection, отзывает unused admin tokens, записывает
+  `USER_DISCONNECTED` и инвалидирует outbox target `ADMIN_CONNECTION` кодом
+  `CONNECTION_DISABLED`. Операция идемпотентна и сохраняет fencing-контракт.
+- Добавлены unit-тесты boundary/actions/service/UI, PostgreSQL integration для
+  read/disconnect/rollback/concurrency и административный E2E happy path с
+  issue/revoke/reissue, существующим `/start` processor, reload, refresh и disconnect.
+  Тесты также закрывают expired/revoked/invalid session и отсутствие утечки токенов.
+- Prisma schema, миграции и зависимости не изменялись. Реальные Telegram credentials,
+  Bot API и production отправки не использовались.
+
+### Проверки
+
+- Узкий unit-набор: **17/17**, 4 файла. Узкий PostgreSQL-набор: **7/7**, 1 файл.
+  Полный admin E2E-файл: **13/13**.
+- Полный unit-набор: **631/631**, 53 файла. Полный PostgreSQL runner:
+  **1104/1104**, 77 файлов.
+- Полный Playwright E2E: **135/135**. Успешно прошли `npm run format:check`,
+  `npm run lint`, `npm run typecheck`, `npm run build`, `npx prisma validate`,
+  `docker compose config --quiet` и `git diff --check`. После runner не осталось
+  `zaprosto_test_*` баз и production advisory lock `(526008, 61)`.
+
+### Границы и продолжение
+
+06.3F не реализует dispatcher/`sendMessage`, business producers 06.4, webhook,
+автоматический browser polling или operator bot rotation. ADR-0014 остаётся `Proposed`;
+этап 06 целиком не завершён.

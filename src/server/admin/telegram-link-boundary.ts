@@ -1,20 +1,28 @@
 import type {
+  AdminTelegramDisconnectResult,
+  AdminTelegramOperations,
+  AdminTelegramStateResult,
+} from "../../modules/telegram/server/admin-connection-service";
+import type {
   TelegramAdminLinkResult,
   TelegramAdminRevokeResult,
   TelegramLinkOperations,
 } from "../../modules/telegram/server/link-service";
 import { validOrigin } from "../public/security";
 
-type Result =
-  | TelegramAdminLinkResult
-  | TelegramAdminRevokeResult
-  | { ok: false; code: "FORBIDDEN" | "UNAVAILABLE" };
+type StateResult = AdminTelegramStateResult | { ok: false; code: "UNAVAILABLE" };
+type MutationResult =
+  TelegramAdminLinkResult | TelegramAdminRevokeResult | AdminTelegramDisconnectResult;
+type BoundaryFailure = { ok: false; code: "FORBIDDEN" | "UNAVAILABLE" };
 
-export function createAdminTelegramLinkBoundary(service: TelegramLinkOperations) {
-  async function mutation(
+export function createAdminTelegramLinkBoundary(
+  service: TelegramLinkOperations,
+  connections?: AdminTelegramOperations,
+) {
+  async function mutation<T extends MutationResult>(
     headers: Headers,
-    work: () => Promise<TelegramAdminLinkResult | TelegramAdminRevokeResult>,
-  ): Promise<Result> {
+    work: () => Promise<T>,
+  ): Promise<T | BoundaryFailure> {
     if (!validOrigin(headers)) return { ok: false, code: "FORBIDDEN" };
     try {
       return await work();
@@ -24,9 +32,22 @@ export function createAdminTelegramLinkBoundary(service: TelegramLinkOperations)
     }
   }
   return {
+    state: async (token: unknown): Promise<StateResult> => {
+      try {
+        return connections ? await connections.getState(token) : { ok: false, code: "UNAVAILABLE" };
+      } catch {
+        return { ok: false, code: "UNAVAILABLE" };
+      }
+    },
     issue: (headers: Headers, token: unknown) =>
       mutation(headers, () => service.issueAdminLink(token)),
     revoke: (headers: Headers, token: unknown) =>
       mutation(headers, () => service.revokeAdminLink(token)),
+    disconnect: (headers: Headers, token: unknown) =>
+      mutation(headers, async () =>
+        connections
+          ? connections.disconnect(token)
+          : ({ ok: false, code: "UNAUTHORIZED" } as const),
+      ),
   };
 }

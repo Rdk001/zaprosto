@@ -134,6 +134,7 @@ export async function createTelegramLinkFixture(database: PrismaClient) {
         OR: [
           { appointment: { serviceId: service.id } },
           { appointmentConnection: { appointment: { serviceId: service.id } } },
+          { adminConnection: { adminUser: { login: { startsWith: prefix } } } },
         ],
       },
     });

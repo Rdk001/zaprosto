@@ -4,6 +4,8 @@ import { expect, test, type Page, type Request } from "@playwright/test";
 import { createPrismaClient } from "../../src/server/db/create-prisma-client";
 import { hashPassword } from "../../src/modules/auth/server/password";
 import { hashSessionToken } from "../../src/modules/auth/server/auth-service";
+import { parseTelegramStartCommand } from "../../src/modules/telegram/server/start-command-parser";
+import { processTelegramStart } from "../../src/modules/telegram/server/start-processor";
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !new URL(url).pathname.startsWith("/zaprosto_test_"))
@@ -17,9 +19,23 @@ test.beforeAll(async () => {
   passwordHash = await hashPassword(credentials.password);
 });
 test.beforeEach(async () => {
+  await db.notificationOutbox.deleteMany();
+  await db.telegramLinkToken.deleteMany();
+  await db.adminTelegramConnection.deleteMany();
   await db.adminSession.deleteMany();
   await db.adminUser.deleteMany();
   await db.publicRateLimit.deleteMany();
+  await db.telegramBotState.update({
+    where: { id: 1 },
+    data: {
+      botUserId: null,
+      botUsername: null,
+      nextUpdateId: 0n,
+      lastVerifiedAt: null,
+      lastPollAt: null,
+      lastErrorCode: null,
+    },
+  });
   await db.adminUser.create({ data: { login: credentials.login, passwordHash } });
 });
 test.afterAll(async () => {
@@ -50,6 +66,9 @@ test("анонимный HTML/RSC не получает закрытые дан�
   }
   await page.goto("/admin");
   await expect(page).toHaveURL(/\/admin\/login$/);
+  const notifications = await request.get("/admin/notifications", { maxRedirects: 0 });
+  expect(notifications.status()).toBe(307);
+  expect(notifications.headers().location).toBe("/admin/login");
   await expect(page.getByLabel("Логин", { exact: true })).toHaveAttribute(
     "autocomplete",
     "username",
@@ -115,6 +134,139 @@ test("вход, HttpOnly cookie, отсутствие секретов, выхо
   });
   expect((await db.adminSession.findFirstOrThrow()).revokedAt).not.toBeNull();
 });
+test("администратор самостоятельно подключает и отключает Telegram", async ({ page, context }) => {
+  await login(page);
+  const admin = await db.adminUser.findFirstOrThrow({ where: { login: credentials.login } });
+  const session = await db.adminSession.findFirstOrThrow({ where: { adminId: admin.id } });
+  await db.$executeRaw`
+    UPDATE telegram_bot_state
+    SET bot_user_id = 5000000001,
+        bot_username = 'zaprosto_test_bot',
+        last_verified_at = clock_timestamp(),
+        last_poll_at = clock_timestamp(),
+        last_error_code = NULL
+    WHERE id = 1
+  `;
+
+  await page.goto("/admin/notifications");
+  await expect(page.getByRole("link", { name: "Уведомления" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(page.getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
+  await page.getByRole("button", { name: "Подключить Telegram" }).click();
+  const telegramLink = page.getByRole("link", { name: "Открыть Telegram" });
+  const telegramHref = await telegramLink.getAttribute("href");
+  expect(telegramHref).toMatch(/^https:\/\/t\.me\/zaprosto_test_bot\?start=a_[A-Za-z0-9_-]{43}$/);
+  await expect(telegramLink).toHaveAttribute("target", "_blank");
+  await expect(telegramLink).toHaveAttribute("rel", "noreferrer");
+  const firstStartParameter = new URL(telegramHref!).searchParams.get("start")!;
+  expect(page.url()).not.toContain(firstStartParameter);
+  const browserStorage = await page.evaluate(() => ({
+    local: Object.values(localStorage),
+    session: Object.values(sessionStorage),
+    documentCookie: document.cookie,
+  }));
+  expect(JSON.stringify(browserStorage)).not.toContain(firstStartParameter);
+  expect(JSON.stringify(await context.cookies())).not.toContain(firstStartParameter);
+
+  await page.getByRole("button", { name: "Отозвать ссылку" }).click();
+  await expect(page.getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
+  expect(
+    await db.telegramLinkToken.count({
+      where: { adminUserId: admin.id, revokedAt: { not: null }, usedAt: null },
+    }),
+  ).toBe(1);
+  await page.getByRole("button", { name: "Подключить Telegram" }).click();
+  const replacementHref = await page
+    .getByRole("link", { name: "Открыть Telegram" })
+    .getAttribute("href");
+  expect(replacementHref).toMatch(
+    /^https:\/\/t\.me\/zaprosto_test_bot\?start=a_[A-Za-z0-9_-]{43}$/,
+  );
+  const startParameter = new URL(replacementHref!).searchParams.get("start")!;
+  expect(startParameter).not.toBe(firstStartParameter);
+  expect(page.url()).not.toContain(startParameter);
+  expect(JSON.stringify(await context.cookies())).not.toContain(startParameter);
+  expect(await db.telegramLinkToken.count({ where: { adminUserId: admin.id } })).toBe(2);
+  expect(
+    await db.telegramLinkToken.count({
+      where: { adminUserId: admin.id, revokedAt: null, usedAt: null },
+    }),
+  ).toBe(1);
+
+  await page.reload();
+  await expect(page.getByRole("link", { name: "Открыть Telegram" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
+
+  const parsed = parseTelegramStartCommand(
+    {
+      updateId: 8_100_000_001n,
+      message: {
+        messageId: 1n,
+        from: { id: 7_100_000_001n, isBot: false },
+        dateUnixSeconds: Math.floor(Date.now() / 1000),
+        chat: { id: 7_100_000_001n, type: "private" },
+        text: `/start ${startParameter}`,
+      },
+    },
+    "zaprosto_test_bot",
+  );
+  expect(parsed.kind).toBe("PARSED");
+  if (parsed.kind !== "PARSED") throw new Error("Expected parsed Telegram Start");
+  await expect(
+    db.$transaction((tx) => processTelegramStart(tx, parsed.value), {
+      isolationLevel: "ReadCommitted",
+      maxWait: 5_000,
+      timeout: 10_000,
+    }),
+  ).resolves.toEqual({ kind: "CONNECTED" });
+
+  await page.getByRole("button", { name: "Обновить статус" }).click();
+  await expect(page.getByRole("heading", { name: "Telegram подключён" })).toBeVisible();
+  const connection = await db.adminTelegramConnection.findFirstOrThrow({
+    where: { adminUserId: admin.id, disabledAt: null },
+  });
+  const jobIds = (
+    await db.notificationOutbox.findMany({
+      where: { adminConnectionId: connection.id },
+      select: { id: true },
+    })
+  ).map(({ id }) => id);
+  expect(jobIds.length).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Отключить Telegram", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Да, отключить Telegram" })).toBeVisible();
+  expect(
+    await db.adminTelegramConnection.count({
+      where: { adminUserId: admin.id, disabledAt: null },
+    }),
+  ).toBe(1);
+  await page.getByRole("button", { name: "Да, отключить Telegram" }).click();
+  await expect(page.getByRole("button", { name: "Подключить Telegram" })).toBeVisible();
+
+  await expect(
+    db.adminTelegramConnection.findUniqueOrThrow({ where: { id: connection.id } }),
+  ).resolves.toMatchObject({
+    disabledAt: expect.any(Date),
+    disabledReason: "USER_DISCONNECTED",
+  });
+  const jobs = await db.notificationOutbox.findMany({ where: { id: { in: jobIds } } });
+  expect(jobs).toHaveLength(jobIds.length);
+  expect(
+    jobs.every(
+      ({ status, invalidationCode }) =>
+        status === "CANCELLED" && invalidationCode === "CONNECTION_DISABLED",
+    ),
+  ).toBe(true);
+  await expect(
+    db.adminSession.findUniqueOrThrow({ where: { id: session.id } }),
+  ).resolves.toMatchObject({ revokedAt: null });
+  expect(
+    (await db.adminSession.findUniqueOrThrow({ where: { id: session.id } })).expiresAt.getTime(),
+  ).toBeGreaterThan(Date.now());
+  await expect(page).toHaveURL(/\/admin\/notifications$/);
+});
 test("ошибка, неизвестный и неактивный логин неразличимы", async ({ page }) => {
   let message = "";
   for (const variant of ["wrong", "unknown", "inactive"]) {
@@ -150,6 +302,8 @@ test("блокировка и завершение её срока", async ({ pa
 for (const mode of ["expired", "revoked", "inactive", "forged"]) {
   test("ранее выданная сессия: " + mode, async ({ page, context }) => {
     await login(page);
+    await page.goto("/admin/notifications");
+    await expect(page).toHaveURL(/\/admin\/notifications$/);
     if (mode === "expired")
       await db.adminSession.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
     if (mode === "revoked") await db.adminSession.updateMany({ data: { revokedAt: new Date() } });

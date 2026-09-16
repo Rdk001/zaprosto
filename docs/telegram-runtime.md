@@ -512,3 +512,30 @@ extensionless imports сгенерированного Prisma TypeScript client.
 06.3D не добавляет dispatcher, обработку `NotificationOutbox`, `sendMessage`, rate
 limiter отправки, business producers, UI, routes или webhook endpoint. Prisma schema и
 миграции не менялись.
+
+## Самостоятельное подключение администратора (06.3F)
+
+Страница `/admin/notifications` доступна только действующей административной сессии.
+HttpOnly session cookie читается исключительно в server-only composition root и в
+zero-argument Server Actions; значение cookie не передаётся в Client Components, props,
+DOM, URL или browser storage. Read action не требует Origin, а issue, revoke и disconnect
+проходят точную проверку настроенного Origin до обращения к доменному сервису.
+
+Read model возвращает закрытый набор `AVAILABLE`, `CONNECTED`, `UNAVAILABLE` и
+`UNAUTHORIZED`. Выпуск и отзыв deep link используют существующий
+`TelegramLinkService`; raw start token живёт только в текущем React state и только внутри
+`https://t.me/<bot>?start=<token>`. Перезагрузка, смена owner generation или любой более
+новый ответ скрывают старую ссылку. UI не восстанавливает её из истории или storage, не
+запускает polling и игнорирует stale async responses.
+
+Admin disconnect выполняется одной транзакцией. Сначала блокируется `AdminUser`, затем
+повторно проверяются активная сессия и аккаунт, после чего блокируется активная
+`AdminTelegramConnection`. Неиспользованные admin link tokens отзываются, connection
+получает `disabledAt` и `USER_DISCONNECTED`, а существующий
+`invalidateTelegramOutbox` вызывается для target `ADMIN_CONNECTION` с кодом
+`CONNECTION_DISABLED`. PENDING jobs отменяются, PROCESSING получают fencing; terminal
+jobs и jobs других connections не изменяются. Повторный disconnect идемпотентен.
+
+Этап не добавляет dispatcher, `sendMessage`, business producers 06.4, webhook,
+автоматический browser polling, новые зависимости, схему или миграции. Integration и E2E
+используют существующий parser/processor без реальных Telegram-запросов.
