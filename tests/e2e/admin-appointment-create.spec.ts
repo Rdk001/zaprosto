@@ -67,6 +67,18 @@ async function login(page: Page) {
   await expect(page.getByRole("heading", { name: "Вы вошли" })).toBeVisible();
 }
 
+async function connectAdmin(adminUserId: string, index: number) {
+  return db.adminTelegramConnection.create({
+    data: {
+      adminUserId,
+      telegramUserId: BigInt(8_000_000_000 + index),
+      telegramChatId: BigInt(8_000_000_000 + index),
+      sourceUpdateId: BigInt(8_100_000_000 + index),
+      connectedAt: new Date(),
+    },
+  });
+}
+
 async function toTime(page: Page, any = false) {
   await login(page);
   await page.getByRole("link", { name: "Записи", exact: true }).click();
@@ -113,6 +125,11 @@ function actionHeaders(request: Request, origin = "http://localhost:3108") {
 test("full SPECIFIC flow, copy actions, admin card and protected client cancellation", async ({
   page,
 }) => {
+  const author = await db.adminUser.findUniqueOrThrow({ where: { login: credentials.login } });
+  const other = await db.adminUser.create({
+    data: { login: "manual-create-other.e2e", passwordHash },
+  });
+  const recipients = await Promise.all([connectAdmin(author.id, 1), connectAdmin(other.id, 2)]);
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -151,6 +168,22 @@ test("full SPECIFIC flow, copy actions, admin card and protected client cancella
     previousStatus: null,
     newStatus: "SCHEDULED",
   });
+  const createdJobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: appointment.id, type: "ADMIN_APPOINTMENT_CREATED" },
+  });
+  expect(createdJobs).toHaveLength(2);
+  expect(createdJobs.map(({ adminConnectionId }) => adminConnectionId).sort()).toEqual(
+    recipients.map(({ id }) => id).sort(),
+  );
+  expect(
+    createdJobs.every(
+      ({ payload }) =>
+        typeof payload === "object" &&
+        payload !== null &&
+        !Array.isArray(payload) &&
+        payload.source === "ADMIN",
+    ),
+  ).toBe(true);
   await page.getByRole("link", { name: "Открыть карточку записи" }).click();
   await expect(page).toHaveURL(new RegExp("/admin/appointments/" + appointment.id + "$"));
   await expect(page.getByRole("heading", { name: "Карточка записи" })).toBeVisible();
@@ -274,6 +307,8 @@ for (const commit of [false, true])
   test(`unknown result ${commit ? "after" : "before"} COMMIT replays only the original attempt`, async ({
     page,
   }) => {
+    const author = await db.adminUser.findUniqueOrThrow({ where: { login: credentials.login } });
+    await connectAdmin(author.id, 1);
     await toTime(page);
     await toReview(page);
     let lost = false;
@@ -300,6 +335,9 @@ for (const commit of [false, true])
     await expect(page.getByRole("heading", { name: "Запись готова" })).toBeVisible();
     expect(await db.appointment.count()).toBe(1);
     expect(await db.bookingRequest.count()).toBe(1);
+    expect(
+      await db.notificationOutbox.count({ where: { type: "ADMIN_APPOINTMENT_CREATED" } }),
+    ).toBe(1);
   });
 
 test("Clipboard failure selects the protected link for manual copying", async ({ page }) => {

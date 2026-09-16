@@ -1383,3 +1383,53 @@ ADR-0014 остаётся `Proposed`; этап 06 целиком не завер
 06.3F не реализует dispatcher/`sendMessage`, business producers 06.4, webhook,
 автоматический browser polling или operator bot rotation. ADR-0014 остаётся `Proposed`;
 этап 06 целиком не завершён.
+
+## Этап 06.4A — producer создания записи и административный fan-out (2026-09-16)
+
+Исходный commit: `035811606e7acc3f2d8fa3442df96d6f96152286`. Работа выполнена в
+текущем дереве без commit и push.
+
+### Реализовано
+
+- Добавлен узкий server-side producer `business-producer.ts`, принимающий только
+  существующий `Prisma.TransactionClient`. Он не открывает вложенную транзакцию и не
+  выполняет Telegram/network-вызовы.
+- Общий `createBookingInTransaction` вызывает producer после создания Appointment и
+  начальной `AppointmentStatusHistory`. Публичный и административный сервисы используют
+  один путь; ранняя ветка idempotency replay остаётся до producer и не создаёт повторных
+  jobs.
+- Producer выбирает только `disabledAt IS NULL` connections активных
+  `AdminUser.isActive = true`, один раз читает `clock_timestamp()::timestamptz(3)` и
+  одним `createMany` создаёт отдельную immutable
+  `ADMIN_APPOINTMENT_CREATED` job на каждую connection. `skipDuplicates` намеренно не
+  используется: конфликт UNIQUE dedupe key откатывает весь fan-out и бизнес-транзакцию.
+- `ONLINE` преобразуется в payload source `PUBLIC`, `ADMIN` сохраняется как
+  `ADMIN`. Snapshot содержит только service/master identity, UTC interval, duration,
+  business timezone и публичные имена. Payload до записи проходит существующий
+  `parseTelegramPayloadV1`, dedupe key строится существующим
+  `buildAdminAppointmentCreatedDedupeKey`; PII, credentials, chat/user id, URL и цена
+  не сериализуются.
+- Добавлены unit-тесты source/snapshot/runtime boundary и fan-out primitives,
+  PostgreSQL integration для public/admin recipients, отсутствия recipients, replay,
+  параллельного idempotency, producer rollback и атомарного duplicate-dedupe failure.
+  Public/admin E2E используют прямые безопасные fixtures connections, проверяют source
+  и отсутствие дубликатов после защищённого replay.
+- Prisma schema, миграции и зависимости не изменялись. ADR-0014 остаётся `Proposed`.
+
+### Проверки
+
+- Узкий unit producer: **7/7**, отдельный PostgreSQL producer-набор: **6/6**.
+  Изменённые public/admin E2E-файлы: **29/29**.
+- Полный unit-набор: **638/638**, 54 файла. Полный PostgreSQL runner:
+  **1117/1117**, 79 файлов.
+- Полный Playwright E2E: **135/135**. Успешно прошли `npm run lint`,
+  `npm run typecheck`, `npm run format:check`, `npm run build`,
+  `npx prisma validate`, `docker compose config --quiet` и `git diff --check`.
+  После runner не осталось `zaprosto_test_*` баз и production advisory lock
+  `(526008, 61)`.
+
+### Границы и продолжение
+
+06.4A только создаёт `ADMIN_APPOINTMENT_CREATED` при новом Appointment. Отмена,
+перенос, клиентские changed/reminder jobs, dispatcher, `sendMessage`, retry доставки и
+message builder не реализованы; внешняя отправка отсутствует. Следующая задача — 06.4B.

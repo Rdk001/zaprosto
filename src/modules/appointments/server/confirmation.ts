@@ -2,6 +2,7 @@ import type { Prisma } from "../../../generated/prisma/client";
 
 export const confirmationSelect = {
   id: true,
+  version: true,
   status: true,
   startsAt: true,
   endsAt: true,

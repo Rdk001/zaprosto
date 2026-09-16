@@ -14,6 +14,7 @@ import {
   type Clock,
 } from "../../scheduling/server/availability-service";
 import { businessContextHash, settingsSelect } from "../../settings/server/context";
+import { produceAdminAppointmentCreated } from "../../telegram/server/business-producer";
 import type { CreateBookingInput } from "../domain/booking-input";
 import { hashBookingToken, matchesBookingToken } from "./booking-security";
 import type { BookingAvailability, BookingRejectionReason, CreateBookingResult } from "./types";
@@ -194,6 +195,21 @@ export async function createBookingInTransaction(input: {
       changedAt: clock.now(),
     },
     select: { id: true },
+  });
+  await produceAdminAppointmentCreated(tx, {
+    source,
+    appointment: {
+      id: appointment.id,
+      version: appointment.version,
+      serviceId: appointment.serviceId,
+      masterId: appointment.master.id,
+      startsAt: appointment.startsAt,
+      endsAt: appointment.endsAt,
+      durationMinutes: appointment.serviceDurationSnapshot,
+      businessTimeZone: settings.timezone,
+      serviceName: appointment.serviceNameSnapshot,
+      masterName: appointment.master.name,
+    },
   });
   return {
     ok: true,

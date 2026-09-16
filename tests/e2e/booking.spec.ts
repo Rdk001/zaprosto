@@ -17,6 +17,9 @@ test.beforeEach(async () => {
   await db.notificationOutbox.deleteMany();
   await db.telegramLinkToken.deleteMany();
   await db.appointmentTelegramConnection.deleteMany();
+  await db.adminTelegramConnection.deleteMany();
+  await db.adminSession.deleteMany();
+  await db.adminUser.deleteMany();
   await db.appointmentStatusHistory.deleteMany();
   await db.appointment.deleteMany();
   await db.bookingRequest.deleteMany();
@@ -37,6 +40,20 @@ test.beforeEach(async () => {
 test.afterAll(async () => {
   await db.$disconnect();
 });
+async function connectAdmin(index: number) {
+  const admin = await db.adminUser.create({
+    data: { login: `public-fanout-${index}@example.test`, passwordHash: "not-used" },
+  });
+  return db.adminTelegramConnection.create({
+    data: {
+      adminUserId: admin.id,
+      telegramUserId: BigInt(9_000_000_000 + index),
+      telegramChatId: BigInt(9_000_000_000 + index),
+      sourceUpdateId: BigInt(9_100_000_000 + index),
+      connectedAt: new Date(),
+    },
+  });
+}
 async function toTime(page: Page, any = false) {
   await page.goto("/");
   await page.getByRole("button", { name: /Мужская стрижка/ }).click();
@@ -255,6 +272,7 @@ test("двойной клик создаёт одну запись", async ({ pa
   expect(await db.bookingRequest.count()).toBe(1);
 });
 test("потеря реального ответа и reload повторяют исходную пару", async ({ page }) => {
+  const recipients = await Promise.all([connectAdmin(1), connectAdmin(2)]);
   await toTime(page);
   await review(page);
   let lost = false;
@@ -278,6 +296,22 @@ test("потеря реального ответа и reload повторяют 
   await expect(page.getByRole("heading", { name: "Вы записаны." })).toBeVisible();
   expect(await db.appointment.count()).toBe(1);
   expect((await db.appointment.findFirstOrThrow()).id).toBe(id);
+  const jobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: id, type: "ADMIN_APPOINTMENT_CREATED" },
+  });
+  expect(jobs).toHaveLength(2);
+  expect(jobs.map(({ adminConnectionId }) => adminConnectionId).sort()).toEqual(
+    recipients.map(({ id: connectionId }) => connectionId).sort(),
+  );
+  expect(
+    jobs.every(
+      ({ payload }) =>
+        typeof payload === "object" &&
+        payload !== null &&
+        !Array.isArray(payload) &&
+        payload.source === "PUBLIC",
+    ),
+  ).toBe(true);
 });
 test("неверная ссылка и недопустимый статус", async ({ page }) => {
   await page.goto("/appointment#" + prepareBookingAttempt().cancellationToken);
