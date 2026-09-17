@@ -48,6 +48,14 @@ PostgreSQL-транзакции; доставка имеет семантику 
 distributed rate limiter и автоматическое отключение проблемной connection пока не
 подключены.
 
+**06.5D реализована.** Fenced `finish` атомарно завершает job, отключает точную
+Appointment/Admin Telegram connection по immutable recipient FK и инвалидирует её
+незавершённые sibling jobs. Автоматическое отключение ограничено кодами
+`CHAT_NOT_FOUND`, `BOT_BLOCKED`, `CHAT_WRITE_FORBIDDEN` и
+`TELEGRAM_USER_DEACTIVATED`; первая причина отключения не перезаписывается.
+`DIRECT_CHAT` не отключает connections. Production dispatcher/worker loop и
+distributed rate limiter остаются следующими этапами.
+
 ## 07. Подготовка MVP к демонстрации
 
 Проверить критические сценарии на мобильных экранах, подготовить только вымышленные демонстрационные персональные данные, инструкции отдельного развёртывания для заказчика и обновить документацию.

@@ -195,36 +195,31 @@ describe("Telegram PostgreSQL outbox lifecycle", () => {
     expect((await read(job.id)).lastErrorCode).toBeNull();
   });
 
-  it.each([
-    "INVALID_REQUEST",
-    "CHAT_NOT_FOUND",
-    "BOT_BLOCKED",
-    "CHAT_WRITE_FORBIDDEN",
-    "TELEGRAM_USER_DEACTIVATED",
-    "PAYLOAD_VERSION_UNSUPPORTED",
-    "RESPONSE_INVALID",
-  ] as const)("permanent %s becomes DEAD without changing connections", async (errorCode) => {
-    await fixture.seed();
-    const job = await claim();
-    expect(await repository.finish({ ...sent(job), outcome: "DEAD", errorCode })).toMatchObject({
-      status: "DEAD",
-    });
-    expect(await read(job.id)).toMatchObject({
-      status: "DEAD",
-      attempts: 1,
-      lastErrorCode: errorCode,
-      finishedAt: now,
-      sentAt: null,
-      ...noLease,
-    });
-    expect(
-      (
-        await database.adminTelegramConnection.findUniqueOrThrow({
-          where: { id: fixture.adminConnectionId },
-        })
-      ).disabledAt,
-    ).toBeNull();
-  });
+  it.each(["INVALID_REQUEST", "PAYLOAD_VERSION_UNSUPPORTED", "RESPONSE_INVALID"] as const)(
+    "non-recipient permanent %s becomes DEAD without changing connections",
+    async (errorCode) => {
+      await fixture.seed();
+      const job = await claim();
+      expect(await repository.finish({ ...sent(job), outcome: "DEAD", errorCode })).toMatchObject({
+        status: "DEAD",
+      });
+      expect(await read(job.id)).toMatchObject({
+        status: "DEAD",
+        attempts: 1,
+        lastErrorCode: errorCode,
+        finishedAt: now,
+        sentAt: null,
+        ...noLease,
+      });
+      expect(
+        (
+          await database.adminTelegramConnection.findUniqueOrThrow({
+            where: { id: fixture.adminConnectionId },
+          })
+        ).disabledAt,
+      ).toBeNull();
+    },
+  );
 
   it.each(OUTBOX_SKIP_CODES)("worker skip %s clears lease and finishes", async (errorCode) => {
     await fixture.seed();

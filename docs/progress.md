@@ -1693,3 +1693,61 @@ commit и push.
 rate limiter, recovery loop и отключение `TelegramConnection` при постоянной ошибке
 получателя намеренно не подключены. Отключение connection должно быть следующим этапом
 до подключения production dispatcher.
+
+## Этап 06.5D — атомарное отключение Telegram connection (2026-09-17)
+
+Исходный commit: `b5fa3d82412e46fb93b2410a74039501954275ae`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- `TelegramOutboxRepository.finish()` после всех status/lease/DB-time/invalidation
+  проверок атомарно обрабатывает постоянные ошибки получателя. Отключающими являются
+  только `CHAT_NOT_FOUND`, `BOT_BLOCKED`, `CHAT_WRITE_FORBIDDEN` и
+  `TELEGRAM_USER_DEACTIVATED`; тот же код сохраняется как `disabledReason`.
+- Recipient определяется только immutable полями текущего job.
+  `APPOINTMENT_CONNECTION` отключает точный `appointmentConnectionId`,
+  `ADMIN_CONNECTION` — точный `adminConnectionId`; `AdminUser` не изменяется.
+  `DIRECT_CHAT` завершает текущий job как `DEAD` без поиска connection по chat ID.
+  Несогласованная recipient-комбинация даёт `OUTBOX_DATA_INVALID`.
+- При первом отключении connection получает PostgreSQL time, затем общий helper
+  инвалидирует siblings с `CONNECTION_DISABLED`: PENDING становятся `CANCELLED` с
+  `finishedAt`, PROCESSING сохраняют status и lease, а поздний finish переводит их в
+  `SKIPPED/CONNECTION_INACTIVE`. Текущий job исключён из массовой инвалидации и
+  завершается `DEAD`.
+- Существующие `disabledAt/disabledReason` не перезаписываются. Параллельный finish,
+  увидевший уже отключённый connection, инвалидирует собственный job и завершает его
+  как `SKIPPED`; первый сохранённый reason остаётся источником истины.
+- Порядок блокировок: текущий job, конкретный connection, siblings по UUID.
+  PENDING siblings гарантированно блокируются и отменяются; PROCESSING siblings
+  обрабатываются упорядоченно с `SKIP LOCKED`, чтобы два одновременных постоянных
+  finish одного connection не образовали дедлок. HTTP остаётся вне транзакции.
+- Публичный контракт `TelegramDeliveryAttempt`, Prisma schema, миграции и зависимости
+  не изменялись.
+
+### Целевые проверки
+
+- Затронутые unit-файлы outbox repository и delivery attempt: **40/40**.
+- PostgreSQL outbox lifecycle, новый disable-набор и concurrency-набор: **75/75** в
+  автоматически созданной и удалённой `zaprosto_test_*` базе.
+- PostgreSQL delivery attempt: **5/5** в отдельной автоматически созданной и удалённой
+  `zaprosto_test_*` базе.
+- Проверены точные Appointment/Admin recipients, четыре disable reason, PENDING и
+  PROCESSING siblings, чужой connection, DIRECT_CHAT, неотключающие outcomes,
+  потерянный/просроченный lease, terminal и invalidated jobs, существующая причина,
+  полный rollback и параллельные постоянные ошибки без дедлока.
+- `npm test` без DB-окружения подтвердил **716/716** unit-тестов, после чего ожидаемо
+  завершился ошибкой импорта integration suites, требующих `TEST_DATABASE_URL`.
+- Полный изолированный PostgreSQL runner с `PUBLIC_ORIGIN` из `.env.example`:
+  **1220 passed, 10 skipped**. Единственный failing suite — ранее существующий
+  межфайловый конфликт `telegram-delivery-preflight.test.ts`: попытка повторно создать
+  singleton `business_settings(id=1)`, после чего его cleanup видит неинициализированный
+  fixture. Целевые файлы 06.5D отдельно проходят на чистых временных базах.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run build` и `git diff --check`. Playwright E2E не запускался: UI не менялся.
+
+### Границы и продолжение
+
+Production dispatcher/worker polling loop, distributed rate limiter, advisory locks,
+recovery scheduler, readiness polling и глобальный circuit breaker не подключены.

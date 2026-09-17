@@ -564,3 +564,31 @@ producer инвалидировал job во время HTTP; ошибка от�
 06.5C не подключает production dispatcher/worker loop, distributed rate limiter,
 recovery loop и отключение `TelegramConnection` при постоянной ошибке получателя.
 Отключение connection должно быть реализовано следующим этапом до production dispatcher.
+
+## Атомарное отключение connection при постоянной ошибке получателя (06.5D)
+
+`TelegramOutboxRepository.finish()` автоматически отключает connection только для
+`CHAT_NOT_FOUND`, `BOT_BLOCKED`, `CHAT_WRITE_FORBIDDEN` и
+`TELEGRAM_USER_DEACTIVATED`. Значение `disabledReason` совпадает с error code.
+`INVALID_REQUEST`, `PAYLOAD_VERSION_UNSUPPORTED`, `RESPONSE_INVALID`,
+`RESPONSE_TOO_LARGE`, retryable ошибки, `CONFIG_UNAUTHORIZED` и успешный `SENT`
+connection не изменяют.
+
+Операция выполняется в одной fenced PostgreSQL-транзакции. Сначала блокируется текущий
+outbox job и проверяются `PROCESSING`, lease token, DB-time expiry и существующая
+invalidation. Затем по immutable `appointmentConnectionId` или `adminConnectionId`
+блокируется ровно один connection, при первом отключении сохраняются PostgreSQL time и
+постоянный error code, после чего связанные sibling jobs инвалидируются
+`CONNECTION_DISABLED`. PENDING становятся `CANCELLED`; PROCESSING сохраняют lease и
+статус, а их поздний `finish` становится `SKIPPED/CONNECTION_INACTIVE`. Текущий job
+первого отключения завершается `DEAD`.
+
+`DIRECT_CHAT` не имеет connection: постоянная ошибка завершает только текущий job как
+`DEAD`, без поиска по `telegramChatId` и без изменения чужих очередей. Уже сохранённые
+`disabledAt/disabledReason` не перезаписываются. Если параллельный `finish` видит уже
+отключённый connection, его job безопасно получает `CONNECTION_DISABLED` и
+`SKIPPED/CONNECTION_INACTIVE`. Ошибка SQL откатывает финализацию, отключение и
+инвалидацию целиком.
+
+06.5D не подключает production dispatcher/worker loop, distributed rate limiter,
+recovery scheduler, advisory locks, readiness polling или глобальный circuit breaker.

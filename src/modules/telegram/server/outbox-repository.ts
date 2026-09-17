@@ -26,8 +26,19 @@ import {
 } from "./outbox-contract";
 
 const CONFIGURATION_RETRY_DELAY_MS = 5 * 60_000;
+const CONNECTION_DISABLING_ERROR_CODES = [
+  "CHAT_NOT_FOUND",
+  "BOT_BLOCKED",
+  "CHAT_WRITE_FORBIDDEN",
+  "TELEGRAM_USER_DEACTIVATED",
+] as const;
+type ConnectionDisablingErrorCode = (typeof CONNECTION_DISABLING_ERROR_CODES)[number];
 const rowSchema = z.object({
   id: outboxUuidSchema,
+  recipientKind: z.enum(["APPOINTMENT_CONNECTION", "ADMIN_CONNECTION", "DIRECT_CHAT"]),
+  appointmentConnectionId: outboxUuidSchema.nullable(),
+  adminConnectionId: outboxUuidSchema.nullable(),
+  directChatId: z.bigint().nullable(),
   type: z.enum(TELEGRAM_NOTIFICATION_TYPES),
   status: z.enum(["PENDING", "PROCESSING", "SENT", "DEAD", "CANCELLED", "SKIPPED"]),
   attempts: z.number().int().min(0).max(TELEGRAM_POLICY.maxAttempts),
@@ -44,7 +55,10 @@ const rowSchema = z.object({
 type OutboxRow = z.infer<typeof rowSchema>;
 
 const rowColumns = Prisma.sql`
-  o.id, o.type, o.status, o.attempts,
+  o.id, o.recipient_kind AS "recipientKind",
+  o.appointment_connection_id AS "appointmentConnectionId",
+  o.admin_connection_id AS "adminConnectionId", o.direct_chat_id AS "directChatId",
+  o.type, o.status, o.attempts,
   o.scheduled_at AS "scheduledAt", o.next_attempt_at AS "nextAttemptAt",
   o.expires_at AS "expiresAt", o.lease_token AS "leaseToken",
   o.lease_owner AS "leaseOwner", o.claimed_at AS "claimedAt",
@@ -60,6 +74,43 @@ function readRow(raw: unknown): OutboxRow {
     throw new TelegramOutboxError("OUTBOX_DATA_INVALID");
   }
   return row;
+}
+
+type ConnectionTarget =
+  | { kind: "APPOINTMENT_CONNECTION"; id: string }
+  | { kind: "ADMIN_CONNECTION"; id: string }
+  | { kind: "DIRECT_CHAT" };
+
+function connectionTarget(row: OutboxRow): ConnectionTarget {
+  if (
+    row.recipientKind === "APPOINTMENT_CONNECTION" &&
+    row.appointmentConnectionId !== null &&
+    row.adminConnectionId === null &&
+    row.directChatId === null
+  ) {
+    return { kind: row.recipientKind, id: row.appointmentConnectionId };
+  }
+  if (
+    row.recipientKind === "ADMIN_CONNECTION" &&
+    row.appointmentConnectionId === null &&
+    row.adminConnectionId !== null &&
+    row.directChatId === null
+  ) {
+    return { kind: row.recipientKind, id: row.adminConnectionId };
+  }
+  if (
+    row.recipientKind === "DIRECT_CHAT" &&
+    row.appointmentConnectionId === null &&
+    row.adminConnectionId === null &&
+    row.directChatId !== null
+  ) {
+    return { kind: row.recipientKind };
+  }
+  throw new TelegramOutboxError("OUTBOX_DATA_INVALID");
+}
+
+function isConnectionDisablingError(errorCode: string): errorCode is ConnectionDisablingErrorCode {
+  return CONNECTION_DISABLING_ERROR_CODES.some((candidate) => candidate === errorCode);
 }
 
 type Change = {
@@ -246,6 +297,7 @@ export class TelegramOutboxRepository {
       }
       const base = { nextAttemptAt: row.nextAttemptAt, attempts: row.attempts };
       let change: Change;
+      let invalidateCurrentForDisabledConnection = false;
       if (command.outcome === "SENT") {
         change = { ...base, status: "SENT", errorCode: null };
       } else if (row.invalidationCode !== null) {
@@ -282,10 +334,33 @@ export class TelegramOutboxRepository {
       } else {
         change = { ...base, status: command.outcome, errorCode: command.errorCode };
       }
+      if (
+        command.outcome === "DEAD" &&
+        change.status === "DEAD" &&
+        isConnectionDisablingError(command.errorCode)
+      ) {
+        const connection = await disableRecipientConnection(tx, row, command.errorCode, now);
+        if (connection === "ALREADY_DISABLED") {
+          change = {
+            ...base,
+            status: "SKIPPED",
+            errorCode: "CONNECTION_INACTIVE",
+          };
+          invalidateCurrentForDisabledConnection = true;
+        }
+      }
       const changed = await tx.$executeRaw`
         UPDATE notification_outbox
         SET status = ${change.status}::"NotificationStatus", attempts = ${change.attempts},
             next_attempt_at = ${change.nextAttemptAt}, last_error_code = ${change.errorCode},
+            invalidated_at = COALESCE(
+              invalidated_at,
+              ${invalidateCurrentForDisabledConnection ? now : null}::timestamptz
+            ),
+            invalidation_code = COALESCE(
+              invalidation_code,
+              ${invalidateCurrentForDisabledConnection ? "CONNECTION_DISABLED" : null}
+            ),
             sent_at = ${change.status === "SENT" ? now : null}::timestamptz,
             finished_at = ${change.status === "PENDING" ? null : now}::timestamptz,
             lease_token = NULL, lease_owner = NULL, claimed_at = NULL, lease_expires_at = NULL,
@@ -346,10 +421,75 @@ export class TelegramOutboxRepository {
   }
 }
 
+async function disableRecipientConnection(
+  tx: Prisma.TransactionClient,
+  row: OutboxRow,
+  errorCode: ConnectionDisablingErrorCode,
+  now: Date,
+): Promise<"DIRECT_CHAT" | "DISABLED" | "ALREADY_DISABLED"> {
+  const target = connectionTarget(row);
+  if (target.kind === "DIRECT_CHAT") return "DIRECT_CHAT";
+
+  const connections =
+    target.kind === "APPOINTMENT_CONNECTION"
+      ? await tx.$queryRaw<{ id: string; disabledAt: Date | null }[]>`
+          SELECT id, disabled_at AS "disabledAt"
+          FROM appointment_telegram_connections
+          WHERE id = ${target.id}::uuid
+          FOR UPDATE
+        `
+      : await tx.$queryRaw<{ id: string; disabledAt: Date | null }[]>`
+          SELECT id, disabled_at AS "disabledAt"
+          FROM admin_telegram_connections
+          WHERE id = ${target.id}::uuid
+          FOR UPDATE
+        `;
+  const connection = connections.length === 1 ? connections[0] : null;
+  if (!connection || connection.id !== target.id) {
+    throw new TelegramOutboxError("OUTBOX_DATA_INVALID");
+  }
+  if (connection.disabledAt !== null) return "ALREADY_DISABLED";
+
+  const changed =
+    target.kind === "APPOINTMENT_CONNECTION"
+      ? await tx.$executeRaw`
+          UPDATE appointment_telegram_connections
+          SET disabled_at = ${now},
+              disabled_reason = ${errorCode}::"TelegramConnectionDisabledReason"
+          WHERE id = ${target.id}::uuid AND disabled_at IS NULL
+        `
+      : await tx.$executeRaw`
+          UPDATE admin_telegram_connections
+          SET disabled_at = ${now},
+              disabled_reason = ${errorCode}::"TelegramConnectionDisabledReason"
+          WHERE id = ${target.id}::uuid AND disabled_at IS NULL
+        `;
+  if (changed !== 1) throw new Error("Telegram connection changed after its row lock");
+
+  await invalidateTelegramOutboxRows(
+    tx,
+    {
+      target: { kind: target.kind, id: target.id },
+      code: "CONNECTION_DISABLED",
+      now,
+    },
+    { excludeId: row.id, skipLocked: true },
+  );
+  return "DISABLED";
+}
+
 // Can participate in a caller-owned transaction; never starts a nested transaction.
 export async function invalidateTelegramOutbox(
   tx: Prisma.TransactionClient,
   input: InvalidateOutboxInput,
+): Promise<{ cancelled: number; invalidated: number }> {
+  return invalidateTelegramOutboxRows(tx, input);
+}
+
+async function invalidateTelegramOutboxRows(
+  tx: Prisma.TransactionClient,
+  input: InvalidateOutboxInput,
+  options: { excludeId?: string; skipLocked?: boolean } = {},
 ): Promise<{ cancelled: number; invalidated: number }> {
   const { target, code, now } = checkedOutboxInput(invalidateOutboxSchema, input);
   const predicate =
@@ -358,17 +498,42 @@ export async function invalidateTelegramOutbox(
       : target.kind === "APPOINTMENT_CONNECTION"
         ? Prisma.sql`o.appointment_connection_id = ${target.id}::uuid`
         : Prisma.sql`o.admin_connection_id = ${target.id}::uuid`;
+  const exclusion =
+    options.excludeId === undefined
+      ? Prisma.sql``
+      : Prisma.sql`AND o.id <> ${options.excludeId}::uuid`;
   return safeStorage(async () => {
-    const rows = await tx.$queryRaw<{ status: "CANCELLED" | "PROCESSING" }[]>`
-      UPDATE notification_outbox o
-      SET status = CASE WHEN o.status = 'PENDING' THEN 'CANCELLED'::"NotificationStatus" ELSE o.status END,
-          invalidated_at = COALESCE(o.invalidated_at, ${now}),
-          invalidation_code = COALESCE(o.invalidation_code, ${code}),
-          finished_at = CASE WHEN o.status = 'PENDING' THEN ${now}::timestamptz ELSE o.finished_at END,
-          updated_at = ${now}
-      WHERE (${predicate}) AND (o.status = 'PENDING' OR (o.status = 'PROCESSING' AND o.invalidated_at IS NULL))
-      RETURNING o.status
-    `;
+    const update = (
+      statusPredicate: Prisma.Sql,
+      skipLocked: boolean,
+    ): Promise<{ status: "CANCELLED" | "PROCESSING" }[]> =>
+      tx.$queryRaw`
+        WITH targets AS MATERIALIZED (
+          SELECT o.id
+          FROM notification_outbox o
+          WHERE (${predicate}) AND (${statusPredicate}) ${exclusion}
+          ORDER BY o.id
+          FOR UPDATE OF o ${skipLocked ? Prisma.sql`SKIP LOCKED` : Prisma.sql``}
+        )
+        UPDATE notification_outbox o
+        SET status = CASE WHEN o.status = 'PENDING' THEN 'CANCELLED'::"NotificationStatus" ELSE o.status END,
+            invalidated_at = COALESCE(o.invalidated_at, ${now}),
+            invalidation_code = COALESCE(o.invalidation_code, ${code}),
+            finished_at = CASE WHEN o.status = 'PENDING' THEN ${now}::timestamptz ELSE o.finished_at END,
+            updated_at = ${now}
+        FROM targets
+        WHERE o.id = targets.id
+        RETURNING o.status
+      `;
+    const rows = options.skipLocked
+      ? [
+          ...(await update(Prisma.sql`o.status = 'PENDING'`, false)),
+          ...(await update(Prisma.sql`o.status = 'PROCESSING' AND o.invalidated_at IS NULL`, true)),
+        ]
+      : await update(
+          Prisma.sql`o.status = 'PENDING' OR (o.status = 'PROCESSING' AND o.invalidated_at IS NULL)`,
+          false,
+        );
     return {
       cancelled: rows.filter((row) => row.status === "CANCELLED").length,
       invalidated: rows.filter((row) => row.status === "PROCESSING").length,

@@ -57,6 +57,16 @@ afterEach(async () => {
   expect(forbiddenFetch).not.toHaveBeenCalled();
   vi.unstubAllGlobals();
   await fixture.cleanupJobs();
+  await Promise.all([
+    first.appointmentTelegramConnection.update({
+      where: { id: fixture.clientConnectionId },
+      data: { disabledAt: null, disabledReason: null },
+    }),
+    first.adminTelegramConnection.update({
+      where: { id: fixture.adminConnectionId },
+      data: { disabledAt: null, disabledReason: null },
+    }),
+  ]);
 });
 afterAll(async () => {
   await fixture?.cleanup();
@@ -305,6 +315,54 @@ describe("Telegram PostgreSQL concurrency with independent connections", () => {
     },
     10_000,
   );
+
+  it("serializes simultaneous permanent failures without deadlock or reason overwrite", async () => {
+    const foreign = await fixture.seed({
+      type: "TELEGRAM_CONNECTION_REJECTED",
+      scheduledAt: after(1000),
+    });
+    await Promise.all([fixture.seed(), fixture.seed()]);
+    const jobs = await a.claimDue(claimInput());
+    expect(jobs).toHaveLength(2);
+
+    const results = await bounded(
+      Promise.all([
+        a.finish({
+          id: jobs[0].id,
+          leaseToken: jobs[0].leaseToken,
+          outcome: "DEAD",
+          errorCode: "CHAT_NOT_FOUND",
+        }),
+        b.finish({
+          id: jobs[1].id,
+          leaseToken: jobs[1].leaseToken,
+          outcome: "DEAD",
+          errorCode: "BOT_BLOCKED",
+        }),
+      ]),
+      5000,
+    );
+
+    expect(results).toContainEqual({ kind: "APPLIED", status: "DEAD" });
+    expect(results).toContainEqual({ kind: "APPLIED", status: "SKIPPED" });
+    const connection = await second.adminTelegramConnection.findUniqueOrThrow({
+      where: { id: fixture.adminConnectionId },
+    });
+    expect(["CHAT_NOT_FOUND", "BOT_BLOCKED"]).toContain(connection.disabledReason);
+    expect(connection.disabledAt).toEqual(now);
+    expect(await read(foreign.id)).toEqual(foreign);
+    const stored = await Promise.all(jobs.map((job) => read(job.id)));
+    expect(stored.map((job) => job.status).sort()).toEqual(["DEAD", "SKIPPED"]);
+    expect(stored.find((job) => job.status === "DEAD")).toMatchObject({
+      lastErrorCode: connection.disabledReason,
+      leaseToken: null,
+    });
+    expect(stored.find((job) => job.status === "SKIPPED")).toMatchObject({
+      invalidationCode: "CONNECTION_DISABLED",
+      lastErrorCode: "CONNECTION_INACTIVE",
+      leaseToken: null,
+    });
+  }, 10_000);
 
   it("missing and non-processing rows have controlled outcomes", async () => {
     expect(await a.finish({ id: randomUUID(), leaseToken: randomUUID(), outcome: "SENT" })).toEqual(
