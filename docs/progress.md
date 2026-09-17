@@ -1495,3 +1495,53 @@ Dispatcher, `sendMessage`, message builder, rate limiter, delivery retry и вн
 `CLIENT_APPOINTMENT_CHANGED` и пересоздание reminder не входят в 06.4B.
 Следующая задача — 06.4C: перенос Appointment, клиентское уведомление об изменении и
 пересоздание reminder.
+
+## Этап 06.4C — Telegram-события при переносе Appointment администратором (2026-09-17)
+
+Исходный commit: `2ecbc8fffd9ad6f149501f75d0344067ffd5f732`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена
+без commit и push.
+
+### Реализовано
+
+- Существующая транзакция административного переноса после единственного
+  `Appointment UPDATE` вызывает producer с тем же DB timestamp. Старый
+  `CLIENT_APPOINTMENT_REMINDER` инвалидируется кодом `VISIT_CHANGED`, а active
+  immutable `AppointmentTelegramConnection` стабилизируется через `FOR SHARE`
+  после общего appointment-first lock.
+- Для active client connection создаётся одна `CLIENT_APPOINTMENT_CHANGED` job на
+  новую версию Appointment. Канонический `changedFields` имеет порядок
+  `SERVICE`, `MASTER`, `STARTS_AT`; единые `before/after` содержат identity,
+  производный `endsAt`, duration, timezone и публичные service/master names без
+  цены и клиентских PII. Payload до записи проходит `parseTelegramPayloadV1`,
+  dedupe key строится существующим helper.
+- Новое напоминание создаётся только при active connection и начале строго позднее
+  двух часов от `occurredAt`. Оно использует новую версию и новый
+  `expectedVisit`, расписание `startsAt - 2 часа`, expiry через 15 минут и
+  существующий reminder dedupe helper. При границе два часа и меньше новое
+  напоминание отсутствует.
+- Invalidation и обе новые jobs выполняются внутри исходной Prisma-транзакции одним
+  `createMany` без `skipDuplicates`. Ошибка payload/dedupe/storage откатывает
+  Appointment и все Telegram-эффекты. `PROCESSING` сохраняет lease и получает
+  fencing invalidation; no-op, stale version, отсутствие доступа и недоступный слот
+  остаются до producer.
+- Проверены active/disabled connection, time-only и service/master snapshots,
+  несколько изменений в одной job, PENDING/PROCESSING invalidation, no-op/stale,
+  duplicate rollback, параллельный version conflict и перенос обратно с новой
+  version/dedupe. Административные notifications не создаются.
+- Prisma schema, миграции, зависимости и статус ADR-0014 не изменялись.
+
+### Проверки
+
+- Целевой producer unit-файл: **17/17**; целевой PostgreSQL reschedule-файл:
+  **33/33** в отдельной автоматически удалённой `zaprosto_test_*` базе.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run build` и `git diff --check`.
+- Полные `npm test`, `test:unit`, `test:postgres` и `test:e2e` намеренно не
+  запускались в режиме экономии лимита; они отложены до итогового аудита блока 06.4.
+
+### Границы и продолжение
+
+Dispatcher, transport, `sendMessage`, message builder, rate limiter, delivery retry
+и внешняя отправка не реализованы. ADR-0014 остаётся `Proposed`. Следующая
+контрольная точка — итоговая проверка блока 06.4, затем 06.5.

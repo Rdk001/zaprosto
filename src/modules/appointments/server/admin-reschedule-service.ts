@@ -23,6 +23,8 @@ import {
 } from "../../settings/server/context";
 import { isAppointmentOverlap } from "../../../server/db/transaction-errors";
 
+import { produceAdminAppointmentRescheduled } from "../../telegram/server/business-producer";
+
 const currentAppointmentSelect = {
   id: true,
   version: true,
@@ -35,6 +37,7 @@ const currentAppointmentSelect = {
   serviceNameSnapshot: true,
   servicePriceSnapshot: true,
   serviceDurationSnapshot: true,
+  master: { select: { name: true } },
 } satisfies Prisma.AppointmentSelect;
 
 type CurrentAppointment = Prisma.AppointmentGetPayload<{
@@ -362,6 +365,40 @@ export class AdminAppointmentRescheduleService {
                 : {}),
             },
             select: { id: true, version: true },
+          });
+          const afterMasterName =
+            masterId === current.masterId
+              ? current.master.name
+              : (
+                  await tx.master.findUniqueOrThrow({
+                    where: { id: masterId },
+                    select: { name: true },
+                  })
+                ).name;
+          await produceAdminAppointmentRescheduled(tx, {
+            appointmentId: updated.id,
+            appointmentVersion: updated.version,
+            occurredAt: now,
+            before: {
+              serviceId: current.serviceId,
+              masterId: current.masterId,
+              startsAt: current.startsAt,
+              endsAt: current.endsAt,
+              durationMinutes: current.serviceDurationSnapshot,
+              businessTimeZone: settings.timezone,
+              serviceName: current.serviceNameSnapshot,
+              masterName: current.master.name,
+            },
+            after: {
+              serviceId: selected.service.id,
+              masterId,
+              startsAt: input.startsAt,
+              endsAt,
+              durationMinutes: selected.service.durationMinutes,
+              businessTimeZone: settings.timezone,
+              serviceName: selected.service.name,
+              masterName: afterMasterName,
+            },
           });
           return {
             ok: true,

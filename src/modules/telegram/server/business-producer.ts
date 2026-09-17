@@ -5,13 +5,18 @@ import {
   buildAdminAppointmentCancelledDedupeKey,
   buildAdminAppointmentCreatedDedupeKey,
   buildClientAppointmentCancelledDedupeKey,
+  buildClientAppointmentChangedDedupeKey,
+  buildClientAppointmentReminderDedupeKey,
 } from "../domain/dedupe";
 import {
   parseTelegramPayloadV1,
   visitSnapshotV1Schema,
+  type TelegramChangedField,
   type VisitSnapshotV1,
 } from "../domain/payload-v1";
 import { invalidateTelegramOutbox } from "./outbox-repository";
+
+import { calculateClientAppointmentReminderSchedule } from "../domain/reminder-schedule";
 
 const appointmentEventSchema = z.strictObject({
   id: z.uuid(),
@@ -34,6 +39,13 @@ const cancellationProducerInputSchema = z.strictObject({
   actor: z.enum(["CLIENT", "ADMIN"]),
   appointment: appointmentEventSchema,
 });
+const appointmentRescheduledProducerInputSchema = z.strictObject({
+  appointmentId: z.uuid(),
+  appointmentVersion: z.number().int().nonnegative().safe(),
+  occurredAt: z.date(),
+  before: appointmentEventSchema.omit({ id: true, version: true }),
+  after: appointmentEventSchema.omit({ id: true, version: true }),
+});
 const terminalInvalidationInputSchema = z.strictObject({
   appointmentId: z.uuid(),
   code: z.enum(["APPOINTMENT_COMPLETED", "APPOINTMENT_NO_SHOW"]),
@@ -41,6 +53,9 @@ const terminalInvalidationInputSchema = z.strictObject({
 
 export type AdminAppointmentCreatedProducerInput = z.input<typeof createdProducerInputSchema>;
 export type AppointmentCancelledProducerInput = z.input<typeof cancellationProducerInputSchema>;
+export type AppointmentRescheduledProducerInput = z.input<
+  typeof appointmentRescheduledProducerInputSchema
+>;
 export type AppointmentTerminalInvalidationInput = z.input<typeof terminalInvalidationInputSchema>;
 
 export class TelegramBusinessProducerError extends Error {
@@ -65,6 +80,24 @@ function checkedInput<Schema extends z.ZodType>(
   const parsed = schema.safeParse(rawInput);
   if (!parsed.success) inputFailure();
   return parsed.data;
+}
+
+function changedFields(before: VisitSnapshotV1, after: VisitSnapshotV1): TelegramChangedField[] {
+  const fields: TelegramChangedField[] = [];
+  if (
+    before.serviceId !== after.serviceId ||
+    before.serviceName !== after.serviceName ||
+    before.durationMinutes !== after.durationMinutes
+  ) {
+    fields.push("SERVICE");
+  }
+  if (before.masterId !== after.masterId || before.masterName !== after.masterName) {
+    fields.push("MASTER");
+  }
+  if (before.startsAt !== after.startsAt) {
+    fields.push("STARTS_AT");
+  }
+  return fields;
 }
 
 export function adminAppointmentCreatedSource(source: "ONLINE" | "ADMIN"): "PUBLIC" | "ADMIN" {
@@ -317,6 +350,158 @@ export async function produceAppointmentCancelled(
   return {
     adminCreated: adminRecipients.length,
     clientCreated: clientRecipient ? 1 : 0,
+    reminderCancelled: invalidation.cancelled,
+    reminderInvalidated: invalidation.invalidated,
+  };
+}
+
+// The caller holds the Appointment lock and owns the business transaction. The shared
+// connection lock keeps disconnect from invalidating a job between recipient selection and COMMIT.
+export async function produceAdminAppointmentRescheduled(
+  tx: Prisma.TransactionClient,
+  rawInput: AppointmentRescheduledProducerInput,
+): Promise<{
+  changedCreated: number;
+  reminderCreated: number;
+  reminderCancelled: number;
+  reminderInvalidated: number;
+}> {
+  const input = checkedInput(appointmentRescheduledProducerInputSchema, rawInput);
+  const invalidation = await invalidateTelegramOutbox(tx, {
+    target: {
+      kind: "APPOINTMENT",
+      id: input.appointmentId,
+      types: ["CLIENT_APPOINTMENT_REMINDER"],
+    },
+    code: "VISIT_CHANGED",
+    now: input.occurredAt,
+  });
+  const recipients = await tx.$queryRaw<{ id: string }[]>`
+    SELECT id
+    FROM appointment_telegram_connections
+    WHERE appointment_id = ${input.appointmentId}::uuid AND disabled_at IS NULL
+    ORDER BY id
+    FOR SHARE
+  `;
+  if (recipients.length > 1) {
+    throw new TelegramBusinessProducerError("BUSINESS_PRODUCER_DATA_INVALID");
+  }
+  const recipient = recipients[0];
+  if (!recipient) {
+    return {
+      changedCreated: 0,
+      reminderCreated: 0,
+      reminderCancelled: invalidation.cancelled,
+      reminderInvalidated: invalidation.invalidated,
+    };
+  }
+
+  const before = buildVisitSnapshotV1(input.before);
+  const after = buildVisitSnapshotV1(input.after);
+  const fields = changedFields(before, after);
+  const jobs: Prisma.NotificationOutboxCreateManyInput[] = [];
+
+  if (fields.length > 0) {
+    const changedPayload = parseTelegramPayloadV1({
+      notificationType: "CLIENT_APPOINTMENT_CHANGED",
+      payloadVersion: 1,
+      payload: {
+        appointmentVersion: input.appointmentVersion,
+        occurredAt: input.occurredAt.toISOString(),
+        changedFields: fields,
+        before,
+        after,
+      },
+    });
+    if (!changedPayload.ok) inputFailure();
+    jobs.push({
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: input.appointmentId,
+      appointmentConnectionId: recipient.id,
+      adminConnectionId: null,
+      directChatId: null,
+      type: "CLIENT_APPOINTMENT_CHANGED",
+      status: "PENDING",
+      scheduledAt: input.occurredAt,
+      nextAttemptAt: input.occurredAt,
+      expiresAt: null,
+      attempts: 0,
+      leaseToken: null,
+      leaseOwner: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      invalidatedAt: null,
+      invalidationCode: null,
+      lastErrorCode: null,
+      payloadVersion: 1,
+      payload: changedPayload.payload,
+      dedupeKey: buildClientAppointmentChangedDedupeKey({
+        appointmentId: input.appointmentId,
+        version: input.appointmentVersion,
+        appointmentConnectionId: recipient.id,
+      }),
+      sentAt: null,
+      finishedAt: null,
+    });
+  }
+
+  const reminderSchedule = calculateClientAppointmentReminderSchedule({
+    startsAt: input.after.startsAt,
+    now: input.occurredAt,
+  });
+  if (reminderSchedule) {
+    const reminderPayload = parseTelegramPayloadV1({
+      notificationType: "CLIENT_APPOINTMENT_REMINDER",
+      payloadVersion: 1,
+      payload: {
+        visitVersion: input.appointmentVersion,
+        expectedVisit: {
+          serviceId: after.serviceId,
+          masterId: after.masterId,
+          startsAt: after.startsAt,
+          endsAt: after.endsAt,
+          durationMinutes: after.durationMinutes,
+        },
+      },
+    });
+    if (!reminderPayload.ok) inputFailure();
+    jobs.push({
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: input.appointmentId,
+      appointmentConnectionId: recipient.id,
+      adminConnectionId: null,
+      directChatId: null,
+      type: "CLIENT_APPOINTMENT_REMINDER",
+      status: "PENDING",
+      scheduledAt: reminderSchedule.scheduledAt,
+      nextAttemptAt: reminderSchedule.scheduledAt,
+      expiresAt: reminderSchedule.expiresAt,
+      attempts: 0,
+      leaseToken: null,
+      leaseOwner: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      invalidatedAt: null,
+      invalidationCode: null,
+      lastErrorCode: null,
+      payloadVersion: 1,
+      payload: reminderPayload.payload,
+      dedupeKey: buildClientAppointmentReminderDedupeKey({
+        appointmentId: input.appointmentId,
+        visitVersion: input.appointmentVersion,
+        appointmentConnectionId: recipient.id,
+      }),
+      sentAt: null,
+      finishedAt: null,
+    });
+  }
+
+  if (jobs.length > 0) {
+    await tx.notificationOutbox.createMany({ data: jobs });
+  }
+  return {
+    changedCreated: fields.length > 0 ? 1 : 0,
+    reminderCreated: reminderSchedule ? 1 : 0,
     reminderCancelled: invalidation.cancelled,
     reminderInvalidated: invalidation.invalidated,
   };

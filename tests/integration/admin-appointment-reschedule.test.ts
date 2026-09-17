@@ -16,6 +16,12 @@ import { createAppointmentsBoundary } from "../../src/server/admin/appointments-
 import { createAppointmentCreationBoundary } from "../../src/server/admin/appointment-creation-boundary";
 import { createPrismaClient } from "../../src/server/db/create-prisma-client";
 
+import {
+  buildClientAppointmentChangedDedupeKey,
+  buildClientAppointmentReminderDedupeKey,
+} from "../../src/modules/telegram/domain/dedupe";
+import { parseTelegramPayloadV1 } from "../../src/modules/telegram/domain/payload-v1";
+
 const url = process.env.TEST_DATABASE_URL;
 if (!url || !/^\/zaprosto_test_[a-f0-9]+$/.test(new URL(url).pathname)) {
   throw new Error("Use isolated runner");
@@ -53,6 +59,8 @@ function instant(date: string, hour: number, minute = 0): Date {
 }
 
 async function clear() {
+  await db.notificationOutbox.deleteMany();
+  await db.appointmentTelegramConnection.deleteMany();
   await db.appointment.deleteMany();
   await db.bookingRequest.deleteMany();
   await db.master.deleteMany();
@@ -238,6 +246,70 @@ async function stored(id: string) {
     include: {
       statusHistory: { orderBy: [{ changedAt: "asc" }, { id: "asc" }] },
       bookingRequest: true,
+    },
+  });
+}
+
+let telegramExternalId = 12_000_000n;
+
+function nextTelegramExternalId() {
+  telegramExternalId += 1n;
+  return telegramExternalId;
+}
+
+async function clientConnection(appointmentId: string, disabled = false) {
+  return db.appointmentTelegramConnection.create({
+    data: {
+      appointmentId,
+      telegramUserId: nextTelegramExternalId(),
+      telegramChatId: nextTelegramExternalId(),
+      sourceUpdateId: nextTelegramExternalId(),
+      connectedAt: new Date(),
+      disabledAt: disabled ? new Date() : null,
+      disabledReason: disabled ? "USER_DISCONNECTED" : null,
+    },
+  });
+}
+
+async function appointmentReminder(input: {
+  appointmentId: string;
+  connectionId: string;
+  status?: "PENDING" | "PROCESSING";
+}) {
+  const appointment = await db.appointment.findUniqueOrThrow({
+    where: { id: input.appointmentId },
+  });
+  const now = new Date();
+  return db.notificationOutbox.create({
+    data: {
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: input.appointmentId,
+      appointmentConnectionId: input.connectionId,
+      type: "CLIENT_APPOINTMENT_REMINDER",
+      status: input.status ?? "PENDING",
+      scheduledAt: now,
+      nextAttemptAt: now,
+      expiresAt: new Date(now.getTime() + 15 * 60_000),
+      payload: {
+        visitVersion: appointment.version,
+        expectedVisit: {
+          serviceId: appointment.serviceId,
+          masterId: appointment.masterId,
+          startsAt: appointment.startsAt.toISOString(),
+          endsAt: appointment.endsAt.toISOString(),
+          durationMinutes: appointment.serviceDurationSnapshot,
+        },
+      },
+      dedupeKey: `reschedule-reminder-${randomUUID()}`,
+      ...(input.status === "PROCESSING"
+        ? {
+            attempts: 1,
+            leaseToken: randomUUID(),
+            leaseOwner: "reschedule-producer-test",
+            claimedAt: now,
+            leaseExpiresAt: new Date(now.getTime() + 60_000),
+          }
+        : {}),
     },
   });
 }
@@ -1050,4 +1122,356 @@ it("does not retry or guess success when the transaction committed but its resul
     version: 1,
     startsAt: save.startsAt,
   });
+});
+
+it("atomically invalidates the old reminder and creates changed plus a new reminder", async () => {
+  const appointment = await createAppointment();
+  const connection = await clientConnection(appointment.id);
+  const oldReminder = await appointmentReminder({
+    appointmentId: appointment.id,
+    connectionId: connection.id,
+  });
+  const save = await input(appointment.id, { startsAt: instant(localDate, 12) });
+
+  await expect(boundary.rescheduleAppointment(originHeaders, token, save)).resolves.toEqual({
+    ok: true,
+    appointmentId: appointment.id,
+    version: 1,
+  });
+
+  await expect(
+    db.notificationOutbox.findUniqueOrThrow({ where: { id: oldReminder.id } }),
+  ).resolves.toMatchObject({
+    status: "CANCELLED",
+    invalidationCode: "VISIT_CHANGED",
+    finishedAt: expect.any(Date),
+  });
+  const changedJobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: appointment.id, type: "CLIENT_APPOINTMENT_CHANGED" },
+  });
+  expect(changedJobs).toHaveLength(1);
+  const changed = changedJobs[0]!;
+  expect(changed).toMatchObject({
+    recipientKind: "APPOINTMENT_CONNECTION",
+    appointmentConnectionId: connection.id,
+    adminConnectionId: null,
+    directChatId: null,
+    status: "PENDING",
+    scheduledAt: changed.nextAttemptAt,
+    expiresAt: null,
+    payloadVersion: 1,
+  });
+  expect(changed.dedupeKey).toBe(
+    buildClientAppointmentChangedDedupeKey({
+      appointmentId: appointment.id,
+      version: 1,
+      appointmentConnectionId: connection.id,
+    }),
+  );
+  expect(
+    parseTelegramPayloadV1({
+      notificationType: "CLIENT_APPOINTMENT_CHANGED",
+      payloadVersion: changed.payloadVersion,
+      payload: changed.payload,
+    }),
+  ).toMatchObject({
+    ok: true,
+    payload: {
+      appointmentVersion: 1,
+      occurredAt: changed.scheduledAt.toISOString(),
+      changedFields: ["STARTS_AT"],
+      before: {
+        startsAt: appointment.startsAt.toISOString(),
+        endsAt: appointment.endsAt.toISOString(),
+      },
+      after: {
+        startsAt: save.startsAt.toISOString(),
+        endsAt: new Date(save.startsAt.getTime() + 35 * 60_000).toISOString(),
+      },
+    },
+  });
+  const newReminder = await db.notificationOutbox.findFirstOrThrow({
+    where: {
+      appointmentId: appointment.id,
+      type: "CLIENT_APPOINTMENT_REMINDER",
+      id: { not: oldReminder.id },
+    },
+  });
+  expect(newReminder).toMatchObject({
+    appointmentConnectionId: connection.id,
+    status: "PENDING",
+    scheduledAt: new Date(save.startsAt.getTime() - 2 * 60 * 60_000),
+    nextAttemptAt: new Date(save.startsAt.getTime() - 2 * 60 * 60_000),
+    expiresAt: new Date(save.startsAt.getTime() - 2 * 60 * 60_000 + 15 * 60_000),
+  });
+  expect(newReminder.dedupeKey).toBe(
+    buildClientAppointmentReminderDedupeKey({
+      appointmentId: appointment.id,
+      visitVersion: 1,
+      appointmentConnectionId: connection.id,
+    }),
+  );
+});
+
+it("creates one changed event for service and master snapshots and fences processing reminder", async () => {
+  const appointment = await createAppointment();
+  const connection = await clientConnection(appointment.id);
+  const oldReminder = await appointmentReminder({
+    appointmentId: appointment.id,
+    connectionId: connection.id,
+    status: "PROCESSING",
+  });
+  const catalogService = await db.service.create({
+    data: {
+      name: "Replacement service",
+      priceKopecks: 333_444,
+      durationMinutes: 45,
+      masters: { create: { masterId: secondMasterId } },
+    },
+  });
+  const terms = publicServiceTerms(catalogService);
+  const save = await input(appointment.id, {
+    service: {
+      mode: "CATALOG",
+      serviceId: catalogService.id,
+      expectedServiceTerms: terms.termsHash,
+    },
+    master: { type: "SPECIFIC", masterId: secondMasterId },
+    startsAt: appointment.startsAt,
+  });
+
+  await expect(boundary.rescheduleAppointment(originHeaders, token, save)).resolves.toMatchObject({
+    ok: true,
+    version: 1,
+  });
+
+  await expect(
+    db.notificationOutbox.findUniqueOrThrow({ where: { id: oldReminder.id } }),
+  ).resolves.toMatchObject({
+    status: "PROCESSING",
+    invalidationCode: "VISIT_CHANGED",
+    leaseToken: oldReminder.leaseToken,
+    leaseOwner: oldReminder.leaseOwner,
+    finishedAt: null,
+  });
+  const changedJobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: appointment.id, type: "CLIENT_APPOINTMENT_CHANGED" },
+  });
+  expect(changedJobs).toHaveLength(1);
+  expect(
+    parseTelegramPayloadV1({
+      notificationType: "CLIENT_APPOINTMENT_CHANGED",
+      payloadVersion: changedJobs[0]!.payloadVersion,
+      payload: changedJobs[0]!.payload,
+    }),
+  ).toMatchObject({
+    ok: true,
+    payload: {
+      appointmentVersion: 1,
+      changedFields: ["SERVICE", "MASTER"],
+      before: {
+        serviceId,
+        masterId: firstMasterId,
+        serviceName: "Historical service",
+        masterName: "First master",
+        durationMinutes: 35,
+        endsAt: appointment.endsAt.toISOString(),
+      },
+      after: {
+        serviceId: catalogService.id,
+        masterId: secondMasterId,
+        serviceName: terms.name,
+        masterName: "Second master",
+        durationMinutes: 45,
+        endsAt: new Date(appointment.startsAt.getTime() + 45 * 60_000).toISOString(),
+      },
+    },
+  });
+  expect(JSON.stringify(changedJobs[0]!.payload)).not.toMatch(/price|333444/i);
+  expect(
+    await db.notificationOutbox.count({
+      where: { appointmentId: appointment.id, adminConnectionId: { not: null } },
+    }),
+  ).toBe(0);
+});
+
+it("creates no new jobs without an active connection and no-op or stale retries keep outbox stable", async () => {
+  const appointment = await createAppointment();
+  const disabled = await clientConnection(appointment.id, true);
+  const oldReminder = await appointmentReminder({
+    appointmentId: appointment.id,
+    connectionId: disabled.id,
+  });
+  const movedStartsAt = instant(localDate, 12);
+
+  await expect(
+    boundary.rescheduleAppointment(
+      originHeaders,
+      token,
+      await input(appointment.id, { startsAt: movedStartsAt }),
+    ),
+  ).resolves.toMatchObject({ ok: true, version: 1 });
+  expect(await db.notificationOutbox.count({ where: { appointmentId: appointment.id } })).toBe(1);
+  await expect(
+    db.notificationOutbox.findUniqueOrThrow({ where: { id: oldReminder.id } }),
+  ).resolves.toMatchObject({
+    status: "CANCELLED",
+    invalidationCode: "VISIT_CHANGED",
+  });
+
+  const stableCount = await db.notificationOutbox.count({
+    where: { appointmentId: appointment.id },
+  });
+  await expect(
+    boundary.rescheduleAppointment(
+      originHeaders,
+      token,
+      await input(appointment.id, { startsAt: movedStartsAt }),
+    ),
+  ).resolves.toEqual({ ok: false, code: "NO_CHANGES" });
+  const stale = await input(appointment.id, { startsAt: instant(localDate, 13) });
+  await db.appointment.update({
+    where: { id: appointment.id },
+    data: { clientName: "Version bump", version: { increment: 1 } },
+  });
+  await expect(boundary.rescheduleAppointment(originHeaders, token, stale)).resolves.toEqual({
+    ok: false,
+    code: "CONFLICT",
+  });
+  expect(await db.notificationOutbox.count({ where: { appointmentId: appointment.id } })).toBe(
+    stableCount,
+  );
+});
+
+it("rolls back the visit and reminder invalidation when a changed dedupe insert fails", async () => {
+  const appointment = await createAppointment();
+  const connection = await clientConnection(appointment.id);
+  const oldReminder = await appointmentReminder({
+    appointmentId: appointment.id,
+    connectionId: connection.id,
+  });
+  const save = await input(appointment.id, { startsAt: instant(localDate, 12) });
+  const occurredAt = new Date();
+  await db.notificationOutbox.create({
+    data: {
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: appointment.id,
+      appointmentConnectionId: connection.id,
+      type: "CLIENT_APPOINTMENT_CHANGED",
+      scheduledAt: occurredAt,
+      nextAttemptAt: occurredAt,
+      payload: {
+        appointmentVersion: 1,
+        occurredAt: occurredAt.toISOString(),
+        changedFields: ["STARTS_AT"],
+        before: {
+          serviceId,
+          masterId: firstMasterId,
+          startsAt: appointment.startsAt.toISOString(),
+          endsAt: appointment.endsAt.toISOString(),
+          durationMinutes: 35,
+          businessTimeZone: "UTC",
+          serviceName: "Historical service",
+          masterName: "First master",
+        },
+        after: {
+          serviceId,
+          masterId: firstMasterId,
+          startsAt: save.startsAt.toISOString(),
+          endsAt: new Date(save.startsAt.getTime() + 35 * 60_000).toISOString(),
+          durationMinutes: 35,
+          businessTimeZone: "UTC",
+          serviceName: "Historical service",
+          masterName: "First master",
+        },
+      },
+      dedupeKey: buildClientAppointmentChangedDedupeKey({
+        appointmentId: appointment.id,
+        version: 1,
+        appointmentConnectionId: connection.id,
+      }),
+    },
+  });
+
+  await expect(boundary.rescheduleAppointment(originHeaders, token, save)).resolves.toEqual({
+    ok: false,
+    code: "UNAVAILABLE",
+  });
+  await expect(stored(appointment.id)).resolves.toMatchObject({
+    version: 0,
+    startsAt: appointment.startsAt,
+    endsAt: appointment.endsAt,
+  });
+  await expect(
+    db.notificationOutbox.findUniqueOrThrow({ where: { id: oldReminder.id } }),
+  ).resolves.toMatchObject({
+    status: "PENDING",
+    invalidatedAt: null,
+    invalidationCode: null,
+  });
+  expect(
+    await db.notificationOutbox.count({
+      where: { appointmentId: appointment.id, type: "CLIENT_APPOINTMENT_REMINDER" },
+    }),
+  ).toBe(1);
+  expect(
+    await db.notificationOutbox.count({
+      where: { appointmentId: appointment.id, type: "CLIENT_APPOINTMENT_CHANGED" },
+    }),
+  ).toBe(1);
+});
+
+it("serializes parallel reschedules and creates one changed job without duplicates", async () => {
+  const appointment = await createAppointment();
+  await clientConnection(appointment.id);
+  const base = await input(appointment.id);
+  const results = await Promise.all([
+    boundary.rescheduleAppointment(originHeaders, token, {
+      ...base,
+      startsAt: instant(localDate, 12),
+    }),
+    secondBoundary.rescheduleAppointment(originHeaders, token, {
+      ...base,
+      startsAt: instant(localDate, 13),
+    }),
+  ]);
+
+  expect(results.filter((result) => result.ok)).toHaveLength(1);
+  expect(results.filter((result) => !result.ok && result.code === "CONFLICT")).toHaveLength(1);
+  expect(
+    await db.notificationOutbox.count({
+      where: { appointmentId: appointment.id, type: "CLIENT_APPOINTMENT_CHANGED" },
+    }),
+  ).toBe(1);
+  expect(
+    await db.notificationOutbox.count({
+      where: {
+        appointmentId: appointment.id,
+        type: "CLIENT_APPOINTMENT_REMINDER",
+        status: "PENDING",
+      },
+    }),
+  ).toBe(1);
+
+  await expect(
+    boundary.rescheduleAppointment(
+      originHeaders,
+      token,
+      await input(appointment.id, { startsAt: appointment.startsAt }),
+    ),
+  ).resolves.toMatchObject({ ok: true, version: 2 });
+  const changedJobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: appointment.id, type: "CLIENT_APPOINTMENT_CHANGED" },
+  });
+  expect(changedJobs).toHaveLength(2);
+  expect(new Set(changedJobs.map((job) => job.dedupeKey)).size).toBe(2);
+  expect(
+    await db.notificationOutbox.count({
+      where: {
+        appointmentId: appointment.id,
+        type: "CLIENT_APPOINTMENT_REMINDER",
+        status: "PENDING",
+      },
+    }),
+  ).toBe(1);
 });

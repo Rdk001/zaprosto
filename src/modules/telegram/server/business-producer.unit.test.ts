@@ -5,16 +5,20 @@ import {
   buildAdminAppointmentCancelledDedupeKey,
   buildAdminAppointmentCreatedDedupeKey,
   buildClientAppointmentCancelledDedupeKey,
+  buildClientAppointmentChangedDedupeKey,
+  buildClientAppointmentReminderDedupeKey,
 } from "../domain/dedupe";
 import { parseTelegramPayloadV1 } from "../domain/payload-v1";
 import {
   adminAppointmentCreatedSource,
   buildVisitSnapshotV1,
   invalidateAppointmentReminderForTerminalStatus,
+  produceAdminAppointmentRescheduled,
   produceAdminAppointmentCreated,
   produceAppointmentCancelled,
   TelegramBusinessProducerError,
   type AdminAppointmentCreatedProducerInput,
+  type AppointmentRescheduledProducerInput,
 } from "./business-producer";
 
 const APPOINTMENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -104,6 +108,199 @@ function cancellationTransaction(
 }
 
 describe("Telegram business producer", () => {
+  function rescheduleInput(): AppointmentRescheduledProducerInput {
+    return {
+      appointmentId: APPOINTMENT_ID,
+      appointmentVersion: 4,
+      occurredAt: OCCURRED_AT,
+      before: {
+        serviceId: SERVICE_ID,
+        masterId: MASTER_ID,
+        startsAt: new Date("2026-10-05T07:00:00.000Z"),
+        endsAt: new Date("2026-10-05T07:35:00.000Z"),
+        durationMinutes: 35,
+        businessTimeZone: "Europe/Moscow",
+        serviceName: "Old service",
+        masterName: "Old master",
+      },
+      after: {
+        serviceId: "77777777-7777-4777-8777-777777777777",
+        masterId: "88888888-8888-4888-8888-888888888888",
+        startsAt: new Date("2026-10-06T08:00:00.000Z"),
+        endsAt: new Date("2026-10-06T08:45:00.000Z"),
+        durationMinutes: 45,
+        businessTimeZone: "Europe/Moscow",
+        serviceName: "New service",
+        masterName: "New master",
+      },
+    };
+  }
+
+  function rescheduleTransaction(
+    input: {
+      recipient?: string | null;
+      invalidatedRows?: Array<{ status: "CANCELLED" | "PROCESSING" }>;
+    } = {},
+  ) {
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce(
+        input.invalidatedRows ?? [{ status: "CANCELLED" }, { status: "PROCESSING" }],
+      )
+      .mockResolvedValueOnce(
+        input.recipient === null ? [] : [{ id: input.recipient ?? CLIENT_CONNECTION_ID }],
+      );
+    const createMany = vi.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length }));
+    return {
+      tx: {
+        notificationOutbox: { createMany },
+        $queryRaw: queryRaw,
+      } as unknown as Prisma.TransactionClient,
+      queryRaw,
+      createMany,
+    };
+  }
+
+  it("creates one canonical changed job and one reminder from one timestamp", async () => {
+    const { tx, queryRaw, createMany } = rescheduleTransaction();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await expect(produceAdminAppointmentRescheduled(tx, rescheduleInput())).resolves.toEqual({
+      changedCreated: 1,
+      reminderCreated: 1,
+      reminderCancelled: 1,
+      reminderInvalidated: 1,
+    });
+
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const jobs = createMany.mock.calls[0]?.[0].data as Array<Record<string, unknown>>;
+    expect(jobs).toHaveLength(2);
+    const changed = jobs[0]!;
+    const reminder = jobs[1]!;
+    expect(changed).toMatchObject({
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: APPOINTMENT_ID,
+      appointmentConnectionId: CLIENT_CONNECTION_ID,
+      adminConnectionId: null,
+      directChatId: null,
+      type: "CLIENT_APPOINTMENT_CHANGED",
+      status: "PENDING",
+      scheduledAt: OCCURRED_AT,
+      nextAttemptAt: OCCURRED_AT,
+      expiresAt: null,
+      payloadVersion: 1,
+    });
+    expect(changed.dedupeKey).toBe(
+      buildClientAppointmentChangedDedupeKey({
+        appointmentId: APPOINTMENT_ID,
+        version: 4,
+        appointmentConnectionId: CLIENT_CONNECTION_ID,
+      }),
+    );
+    expect(
+      parseTelegramPayloadV1({
+        notificationType: "CLIENT_APPOINTMENT_CHANGED",
+        payloadVersion: changed.payloadVersion,
+        payload: changed.payload,
+      }),
+    ).toMatchObject({
+      ok: true,
+      payload: {
+        appointmentVersion: 4,
+        occurredAt: OCCURRED_AT.toISOString(),
+        changedFields: ["SERVICE", "MASTER", "STARTS_AT"],
+        before: {
+          serviceId: SERVICE_ID,
+          masterId: MASTER_ID,
+          endsAt: "2026-10-05T07:35:00.000Z",
+        },
+        after: {
+          serviceId: "77777777-7777-4777-8777-777777777777",
+          masterId: "88888888-8888-4888-8888-888888888888",
+          endsAt: "2026-10-06T08:45:00.000Z",
+        },
+      },
+    });
+    expect(JSON.stringify(changed.payload)).not.toMatch(/price/i);
+    expect(reminder).toMatchObject({
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentConnectionId: CLIENT_CONNECTION_ID,
+      type: "CLIENT_APPOINTMENT_REMINDER",
+      status: "PENDING",
+      scheduledAt: new Date("2026-10-06T06:00:00.000Z"),
+      nextAttemptAt: new Date("2026-10-06T06:00:00.000Z"),
+      expiresAt: new Date("2026-10-06T06:15:00.000Z"),
+    });
+    expect(reminder.dedupeKey).toBe(
+      buildClientAppointmentReminderDedupeKey({
+        appointmentId: APPOINTMENT_ID,
+        visitVersion: 4,
+        appointmentConnectionId: CLIENT_CONNECTION_ID,
+      }),
+    );
+    expect(
+      parseTelegramPayloadV1({
+        notificationType: "CLIENT_APPOINTMENT_REMINDER",
+        payloadVersion: reminder.payloadVersion,
+        payload: reminder.payload,
+      }),
+    ).toMatchObject({
+      ok: true,
+      payload: {
+        visitVersion: 4,
+        expectedVisit: {
+          serviceId: "77777777-7777-4777-8777-777777777777",
+          masterId: "88888888-8888-4888-8888-888888888888",
+          startsAt: "2026-10-06T08:00:00.000Z",
+          endsAt: "2026-10-06T08:45:00.000Z",
+          durationMinutes: 45,
+        },
+      },
+    });
+  });
+
+  it("does not create a reminder at the exact two-hour boundary", async () => {
+    const { tx, createMany } = rescheduleTransaction({ invalidatedRows: [] });
+    const value = rescheduleInput();
+    const startsAt = new Date(OCCURRED_AT.getTime() + 2 * 60 * 60_000);
+    value.after = {
+      ...value.after,
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + value.after.durationMinutes * 60_000),
+    };
+
+    await expect(produceAdminAppointmentRescheduled(tx, value)).resolves.toMatchObject({
+      changedCreated: 1,
+      reminderCreated: 0,
+    });
+    const jobs = createMany.mock.calls[0]?.[0].data as Array<Record<string, unknown>>;
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({ type: "CLIENT_APPOINTMENT_CHANGED" });
+  });
+
+  it("invalidates the old reminder but creates no jobs without an active connection", async () => {
+    const { tx, queryRaw, createMany } = rescheduleTransaction({
+      recipient: null,
+      invalidatedRows: [{ status: "PROCESSING" }],
+    });
+    await expect(produceAdminAppointmentRescheduled(tx, rescheduleInput())).resolves.toEqual({
+      changedCreated: 0,
+      reminderCreated: 0,
+      reminderCancelled: 0,
+      reminderInvalidated: 1,
+    });
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(createMany).not.toHaveBeenCalled();
+  });
+
+  it("propagates reschedule job storage failures", async () => {
+    const { tx, createMany } = rescheduleTransaction();
+    const failure = new Error("DATABASE_FAILURE_CANARY");
+    createMany.mockRejectedValueOnce(failure);
+    await expect(produceAdminAppointmentRescheduled(tx, rescheduleInput())).rejects.toBe(failure);
+  });
+
   it.each([
     ["ONLINE", "PUBLIC"],
     ["ADMIN", "ADMIN"],
