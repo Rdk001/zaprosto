@@ -17,6 +17,8 @@ describe("Telegram production entrypoint", () => {
       "TelegramDeliveryAttempt",
       "TelegramDeliveryPreflight",
       "TelegramDeliveryPreflightError",
+      "TelegramDeliveryRateGate",
+      "TelegramDeliveryRateGateError",
       "TelegramLinkRepository",
       "TelegramLinkRepositoryError",
       "TelegramLinkService",

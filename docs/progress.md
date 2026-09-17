@@ -1751,3 +1751,68 @@ commit и push.
 
 Production dispatcher/worker polling loop, distributed rate limiter, advisory locks,
 recovery scheduler, readiness polling и глобальный circuit breaker не подключены.
+
+## Этап 06.5E — распределённый PostgreSQL rate gate отправки (2026-09-17)
+
+Исходный commit: `f638f4f9a8d0a5379cbe1079444fef4a95f018ee`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- Добавлен generic `TelegramDeliveryRateGate.run({ chatId, signal? }, callback)`,
+  который возвращает результат callback без изменения и не принимает text, bot token,
+  job payload или lease token. Gate экспортирован через Telegram server entrypoint.
+- Один вызов использует один выделенный `pg.PoolClient` без SQL-транзакции и единый
+  порядок session advisory locks: chat, затем global bot. Production global key —
+  положительный bigint `526008065`, chat key — однозначный отрицательный `-chatId`.
+  Проверяются signed-bigint границы PostgreSQL; параметры передаются как десятичные
+  строки с `::bigint`, без JavaScript `Number`. Тесты внедряют отдельное key space.
+- Monotonic clock фиксируется непосредственно перед callback. Global lock
+  освобождается параллельно HTTP не ранее 40 мс, chat lock — после callback и не ранее
+  1000 мс; прошедшее время вычитается, поэтому долгий callback не получает лишнюю
+  секундную задержку.
+- Caller abort до callback или во время ожидания lock уничтожает сессию и не запускает
+  callback. После старта abort передаётся callback, но deadlines locks сохраняются.
+  Потеря session через `error`/`end` отменяет защищённую операцию и уничтожает
+  connection даже после штатного global unlock.
+- Boolean каждого `pg_advisory_unlock` проверяется. Ошибка/false уничтожает сессию,
+  PostgreSQL снимает оставшиеся locks. Исходная ошибка callback сохраняется после
+  cleanup; подтверждённый успешный результат callback не заменяется cleanup-ошибкой,
+  чтобы не создавать ложный повтор отправки.
+- Здоровая сессия возвращается в pool ровно один раз, повреждённая уничтожается ровно
+  один раз; client и abort listeners удаляются. Безопасные rate-gate ошибки содержат
+  только allowlist-код и не включают SQL, connection metadata или driver cause.
+- Production dispatcher, `TelegramDeliveryAttempt` и worker loop не изменялись.
+  Telegram `429/retry_after` остаётся отдельным механизмом будущего delivery retry.
+
+### Проверки
+
+- Новый unit-файл: **20/20**. Он детерминированно проверяет порядок locks, ровно один
+  callback, неизменный результат, границы 40/1000 мс, параллельный global unlock,
+  долгий HTTP, callback/acquire/unlock ошибки, caller abort, session loss, bigint без
+  `Number`, cleanup и удаление listeners.
+- Новый PostgreSQL integration-файл: **4/4** в автоматически созданной и удалённой
+  `zaprosto_test_*` базе. Проверены два разных `PoolClient`, один и разные chats,
+  нижние границы 1000/40 мс с допуском Windows scheduler, параллельные долгие
+  callbacks, callback error, backend termination и отсутствие advisory locks после
+  каждого теста.
+- `npm test` без DB-окружения подтвердил **736/736 unit-тестов**; итоговый exit 1
+  вызван только защищённым отказом 30 integration suites импортироваться без
+  `TEST_DATABASE_URL`.
+- Полный isolated PostgreSQL runner: **1244 passed, 10 skipped**. Единственный failing
+  suite — ранее зафиксированный межфайловый конфликт
+  `telegram-delivery-preflight.test.ts`: повторное создание singleton
+  `business_settings(id=1)`, затем cleanup неинициализированного fixture. Новый
+  rate-gate файл отдельно проходит на чистой временной базе.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  production `npm run build` web + worker и `git diff --check`. Playwright не
+  запускался: UI не менялся.
+
+### Границы и продолжение
+
+06.5E реализует только изолированный rate gate. Следующая задача должна собрать
+production dispatcher, подключить gate к одной delivery attempt и worker concurrency,
+не смешивая rate gate с обработкой Telegram `429/retry_after`. Claim loop, lease
+recovery scheduler, readiness/circuit breaker и реальные Telegram-запросы в 06.5E не
+добавлялись.

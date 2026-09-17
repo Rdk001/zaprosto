@@ -56,6 +56,15 @@ Appointment/Admin Telegram connection по immutable recipient FK и инвал�
 `DIRECT_CHAT` не отключает connections. Production dispatcher/worker loop и
 distributed rate limiter остаются следующими этапами.
 
+**06.5E реализована.** Добавлен изолированный распределённый
+`TelegramDeliveryRateGate` на PostgreSQL session advisory locks: один выделенный
+`PoolClient`, единый порядок chat → global, минимум 40 мс между общими стартами и
+1000 мс между стартами одного chat. HTTP выполняется без SQL-транзакции; потеря
+сессии отменяет защищённую операцию, а cleanup не превращает уже подтверждённый
+успех HTTP в неизвестную доставку. Gate пока не подключён к
+`TelegramDeliveryAttempt`, dispatcher или worker; Telegram `429/retry_after`
+остаётся отдельным retry-механизмом.
+
 ## 07. Подготовка MVP к демонстрации
 
 Проверить критические сценарии на мобильных экранах, подготовить только вымышленные демонстрационные персональные данные, инструкции отдельного развёртывания для заказчика и обновить документацию.

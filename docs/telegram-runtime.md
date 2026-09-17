@@ -592,3 +592,44 @@ invalidation. Затем по immutable `appointmentConnectionId` или `adminC
 
 06.5D не подключает production dispatcher/worker loop, distributed rate limiter,
 recovery scheduler, advisory locks, readiness polling или глобальный circuit breaker.
+
+## Распределённый rate gate отправки (06.5E)
+
+`TelegramDeliveryRateGate.run({ chatId, signal? }, callback)` ограничивает именно
+момент старта одной будущей операции `sendMessage` и без изменений возвращает
+generic-результат callback. Gate не получает bot token, текст, payload job или lease
+token и пока не подключён к `TelegramDeliveryAttempt`, dispatcher либо worker loop.
+
+Каждый вызов получает один выделенный `pg.PoolClient` без SQL-транзакции и на одной
+PostgreSQL-сессии последовательно берёт session advisory locks: сначала конкретного
+chat, затем общий lock бота. Используется одноаргументное signed-bigint пространство,
+отдельное от двухаргументного polling lock `(526008, 61)` и существующих
+двухаргументных transaction locks. Production global key равен положительному
+`526008065`, а положительный `chatId` однозначно отображается в отрицательный
+`-chatId`. Значения проверяются по границам PostgreSQL `bigint` и передаются
+драйверу десятичными строками с явным `::bigint`, без преобразования через
+JavaScript `Number`. Integration-тесты внедряют отдельное тестовое пространство
+ключей и не используют production locks.
+
+Непосредственно перед вызовом callback фиксируется monotonic `performance.now()`.
+Общий lock освобождается не ранее `startedAt + 40 ms` параллельно выполняющемуся
+HTTP callback. Chat lock удерживается до завершения callback и не ранее
+`startedAt + 1000 ms`; уже прошедшее время вычитается, поэтому медленный HTTP не
+получает дополнительную секундную задержку.
+
+Caller abort до старта не допускает callback; во время ожидания lock выделенная
+сессия уничтожается, чтобы PostgreSQL отменил ожидание и снял уже полученные locks.
+После старта caller abort передаётся объединённым сигналом callback, но временные
+границы locks сохраняются. Событие `error`/`end` сессии в любой момент до
+завершения защищённой операции отменяет callback и уничтожает connection.
+
+Boolean-результат каждого `pg_advisory_unlock` проверяется. Ошибка или отсутствие
+ownership уничтожает connection, после чего PostgreSQL освобождает оставшиеся
+session locks. Исходная ошибка callback повторно выбрасывается только после cleanup.
+Если callback уже подтвердил успешный HTTP-результат, последующий сбой cleanup не
+превращает его в неизвестную доставку и результат возвращается без изменения.
+Здоровая сессия возвращается в pool ровно один раз; повреждённая уничтожается ровно
+один раз, а все client/abort listeners удаляются.
+
+Rate gate не заменяет обработку Telegram `429`: `retry_after` остаётся отдельным
+механизмом delivery retry следующего dispatcher-этапа.
