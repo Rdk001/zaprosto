@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { normalizeTelegramPlainText as normalizeSharedPlainText } from "../domain/plain-text";
 import { createTelegramBotApi, normalizeTelegramPlainText } from "./bot-api";
 import { FakeTelegramTransport, type FakeTelegramTransportStep } from "./fake-transport";
 
@@ -228,6 +229,7 @@ describe("TelegramBotApi success contract", () => {
   });
 
   it("нормализует CR и удаляет controls, сохраняя LF", () => {
+    expect(normalizeTelegramPlainText).toBe(normalizeSharedPlainText);
     expect(normalizeTelegramPlainText("a\r\nb\rc\n\u2028e\u2029f\t\u0000\u009fd")).toBe(
       "a\nb\nc\n\ne\nfd",
     );

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { normalizeTelegramPlainText } from "../domain/plain-text";
 import type { TelegramAdapterErrorCode } from "../domain/safe-error";
 import {
   TelegramTransportFailure,
@@ -286,12 +287,7 @@ function parseJsonBody(operation: TelegramMethod, bytes: Uint8Array): unknown {
   }
 }
 
-export function normalizeTelegramPlainText(input: string): string {
-  return input
-    .replace(/\r\n?/g, "\n")
-    .replace(/[\u2028\u2029]/g, "\n")
-    .replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, "");
-}
+export { normalizeTelegramPlainText } from "../domain/plain-text";
 
 export function createTelegramBotApi(transport: TelegramTransport): TelegramBotApi {
   async function call(

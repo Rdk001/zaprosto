@@ -1545,3 +1545,49 @@ Dispatcher, `sendMessage`, message builder, rate limiter, delivery retry и вн
 Dispatcher, transport, `sendMessage`, message builder, rate limiter, delivery retry
 и внешняя отправка не реализованы. ADR-0014 остаётся `Proposed`. Следующая
 контрольная точка — итоговая проверка блока 06.4, затем 06.5.
+
+## Этап 06.5A — детерминированный Telegram message builder (2026-09-17)
+
+Исходный commit: `6466f46b354b8f2b049318508034271c01a5f18e`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- Добавлен чистый детерминированный message builder с discriminated-union контрактом
+  и безопасными типизированными ошибками для всех восьми текущих типов:
+  `ADMIN_APPOINTMENT_CREATED`, `ADMIN_APPOINTMENT_CANCELLED`,
+  `CLIENT_APPOINTMENT_CANCELLED`, `CLIENT_APPOINTMENT_CHANGED`,
+  `CLIENT_APPOINTMENT_REMINDER`, `CLIENT_CONNECTION_CONFIRMED`,
+  `ADMIN_CONNECTION_CONFIRMED` и `TELEGRAM_CONNECTION_REJECTED`.
+- Snapshot-сообщения используют только payload конкретного события; reminder и
+  connection-confirmation принимают минимальный уже разрешённый live-контекст. Каждый
+  payload повторно проходит `parseTelegramPayloadV1`; builder не читает Prisma,
+  environment или clock и не вызывает сеть.
+- Сообщения формируются как простой русский UTF-8 текст без `parse_mode`. Дата и время
+  явно форматируются в `businessTimeZone`; client confirmation честно различает
+  запланированную, отменённую, завершённую и несостоявшуюся запись, а rejected-текст не
+  раскрывает причину отказа.
+- Общий plain-text sanitizer вынесен в domain-модуль и переиспользуется builder и Bot
+  API: переносы нормализуются, опасные control-символы удаляются, корректный Unicode
+  сохраняется. Builder применяет отдельный предел 2000 Unicode code points без
+  обрезания; транспортный предел Bot API 4096 не изменён.
+- Тексты не содержат цену, имя или телефон клиента, токены/hashes, UUID, Telegram IDs,
+  URL, версии Appointment, dedupe keys и внутренние error codes. Входные payload и
+  resolved-контекст не мутируются. Prisma schema, миграции, зависимости и статус
+  ADR-0014 не изменялись.
+
+### Проверки
+
+- Новый message-builder unit-файл: **23/23**; затронутый Bot API success unit-файл:
+  **34/34**.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run build` и `git diff --check`.
+- Полные `npm test`, `test:unit`, `test:postgres` и `test:e2e` намеренно не запускались;
+  полный аудит и полные наборы отложены до финальной приёмки проекта.
+
+### Границы и продолжение
+
+Delivery preflight, чтение Appointment/connections, dispatcher, claim/recovery,
+`sendMessage`, retry/backoff, rate limiter, cleanup и реальные Telegram-запросы не
+реализовывались. Следующая задача — 06.5B: delivery preflight.
