@@ -539,3 +539,28 @@ jobs и jobs других connections не изменяются. Повторн�
 Этап не добавляет dispatcher, `sendMessage`, business producers 06.4, webhook,
 автоматический browser polling, новые зависимости, схему или миграции. Integration и E2E
 используют существующий parser/processor без реальных Telegram-запросов.
+
+## Одна попытка доставки outbox job (06.5C)
+
+`TelegramDeliveryAttempt.run({ jobId, leaseToken, signal? })` выполняет preflight
+уже захваченного job. `LEASE_LOST` не вызывает ни Telegram, ни `finish`;
+`SKIP` и `DEAD` сразу передаются в существующий fenced `finish`. Только `READY`
+даёт сервису актуальные `chatId` и готовый текст и разрешает ровно один вызов
+`sendMessage`. Внешний caller не может передать адресата или текст в attempt.
+
+HTTP-вызов выполняется после завершения read-only preflight и до отдельной транзакции
+`finish`. Внутренних HTTP-retry нет. Нормализованные ошибки adapter переводятся в
+`RETRY`, `DEAD` или `CONFIGURATION_FAILURE`; неизвестное исключение отправки
+безопасно становится `DELIVERY_OUTCOME_UNKNOWN`. Ошибки preflight, PostgreSQL и
+`finish` поднимаются вызывающему коду без повторной отправки или финализации.
+
+Результат сервиса различает потерю lease на preflight и фактический
+`OutboxTransitionResult` финализации. Успешная отправка остаётся `SENT`, даже если
+producer инвалидировал job во время HTTP; ошибка отправки после такой инвалидации
+обычно становится `SKIPPED`. Потеря lease перед `finish` возвращается как есть.
+Модель доставки остаётся at-least-once: сбой БД после принятого Telegram сообщения
+может привести к повторной доставке после recovery.
+
+06.5C не подключает production dispatcher/worker loop, distributed rate limiter,
+recovery loop и отключение `TelegramConnection` при постоянной ошибке получателя.
+Отключение connection должно быть реализовано следующим этапом до production dispatcher.

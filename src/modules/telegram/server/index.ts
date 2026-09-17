@@ -1,4 +1,5 @@
 export { createTelegramBotApi, TelegramBotApiError } from "./bot-api";
+export { TelegramDeliveryAttempt } from "./delivery-attempt";
 export {
   AppointmentTelegramRepository,
   AppointmentTelegramRepositoryError,
@@ -47,6 +48,10 @@ export type {
   TelegramDeliveryPreflightInput,
   TelegramDeliveryPreflightResult,
 } from "./delivery-preflight";
+export type {
+  TelegramDeliveryAttemptInput,
+  TelegramDeliveryAttemptResult,
+} from "./delivery-attempt";
 export type {
   TelegramAdminLinkRepositoryResult,
   TelegramAppointmentLinkRepositoryResult,

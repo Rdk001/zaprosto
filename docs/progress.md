@@ -1643,3 +1643,53 @@ commit и push.
 Следующая задача — dispatcher/delivery orchestration: вызов `sendMessage` после READY и
 передача SKIP/DEAD в существующий fenced finish. Retry/backoff, rate limiter, worker pool,
 lease recovery и disable-on-permanent-chat-error остаются за границами 06.5B.
+
+## Этап 06.5C — одна попытка доставки Telegram outbox job (2026-09-17)
+
+Исходный commit: `e030ba9c08e3224eaed15a46b7b469eae19c3905`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- Добавлен `TelegramDeliveryAttempt.run({ jobId, leaseToken, signal? })`. Публичный
+  результат различает `PREFLIGHT_LEASE_LOST` и `FINISHED` с фактическим
+  `OutboxTransitionResult`; chat ID, текст, token и Telegram response наружу не выходят.
+- `LEASE_LOST` не вызывает Telegram и `finish`; preflight `SKIP`/`DEAD` передаются в
+  существующий fenced `finish`. `READY` вызывает `sendMessage` ровно один раз с
+  актуальными данными preflight и optional `AbortSignal`, затем финализирует `SENT`.
+- Нормализованные retryable ошибки становятся `RETRY`; `retryAfterSeconds` передаётся
+  только для `TELEGRAM_RATE_LIMIT`. Ошибки конкретного получателя становятся `DEAD`,
+  `CONFIG_UNAUTHORIZED` — `CONFIGURATION_FAILURE`, неизвестное исключение отправки —
+  `RETRY/DELIVERY_OUTCOME_UNKNOWN`. Внутреннего HTTP retry нет.
+- Ошибки preflight/repository поднимаются без преобразования и повторных вызовов.
+  HTTP выполняется вне PostgreSQL-транзакции. Успешная доставка после concurrent
+  invalidation остаётся `SENT`, ошибка становится фактическим результатом repository
+  (обычно `SKIPPED`), потеря lease при `finish` возвращается как есть.
+- Сервис и типы экспортированы из Telegram server entrypoint. Схема, миграции,
+  зависимости, business producers, connection state и worker composition не менялись.
+
+### Проверки
+
+- Новый unit-файл: **22/22**. Полный unit-набор после обновления entrypoint-контракта:
+  **716/716**.
+- Новый PostgreSQL integration-файл с fake Telegram API: **5/5** в автоматически
+  созданной и удалённой `zaprosto_test_*` базе. Проверены `SENT`, retry в `PENDING`,
+  компенсация `CONFIG_UNAUTHORIZED` и обе invalidation-гонки во время HTTP.
+- `npm test` без окружения ожидаемо не запускает integration suites: им требуется
+  изолированный `TEST_DATABASE_URL`. После отделения этой причины unit-набор прошёл.
+- Полный изолированный PostgreSQL runner с `PUBLIC_ORIGIN` из `.env.example` дал
+  **1212 passed, 10 skipped** и один существующий межфайловый конфликт:
+  `telegram-delivery-preflight.test.ts` пытается создать singleton
+  `business_settings(id=1)` после другого suite и получает `business_settings_pkey`.
+  Новый файл отдельно проходит; ошибка не затрагивает изменённые модули.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run build` и `git diff --check`. Playwright E2E не запускался: UI не менялся.
+
+### Границы и продолжение
+
+Доставка остаётся at-least-once: ошибка БД после принятого Telegram сообщения может
+привести к повтору после lease recovery. Production dispatcher/worker loop, distributed
+rate limiter, recovery loop и отключение `TelegramConnection` при постоянной ошибке
+получателя намеренно не подключены. Отключение connection должно быть следующим этапом
+до подключения production dispatcher.
