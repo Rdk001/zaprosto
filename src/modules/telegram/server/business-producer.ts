@@ -1,30 +1,47 @@
 import { z } from "zod";
 
 import type { Prisma } from "../../../generated/prisma/client";
-import { buildAdminAppointmentCreatedDedupeKey } from "../domain/dedupe";
+import {
+  buildAdminAppointmentCancelledDedupeKey,
+  buildAdminAppointmentCreatedDedupeKey,
+  buildClientAppointmentCancelledDedupeKey,
+} from "../domain/dedupe";
 import {
   parseTelegramPayloadV1,
   visitSnapshotV1Schema,
   type VisitSnapshotV1,
 } from "../domain/payload-v1";
+import { invalidateTelegramOutbox } from "./outbox-repository";
 
-const producerInputSchema = z.strictObject({
-  source: z.enum(["ONLINE", "ADMIN"]),
-  appointment: z.strictObject({
-    id: z.uuid(),
-    version: z.number().int().nonnegative().safe(),
-    serviceId: z.uuid(),
-    masterId: z.uuid(),
-    startsAt: z.date(),
-    endsAt: z.date(),
-    durationMinutes: z.number().int().positive().safe(),
-    businessTimeZone: z.string(),
-    serviceName: z.string(),
-    masterName: z.string(),
-  }),
+const appointmentEventSchema = z.strictObject({
+  id: z.uuid(),
+  version: z.number().int().nonnegative().safe(),
+  serviceId: z.uuid(),
+  masterId: z.uuid(),
+  startsAt: z.date(),
+  endsAt: z.date(),
+  durationMinutes: z.number().int().positive().safe(),
+  businessTimeZone: z.string(),
+  serviceName: z.string(),
+  masterName: z.string(),
 });
 
-export type AdminAppointmentCreatedProducerInput = z.input<typeof producerInputSchema>;
+const createdProducerInputSchema = z.strictObject({
+  source: z.enum(["ONLINE", "ADMIN"]),
+  appointment: appointmentEventSchema,
+});
+const cancellationProducerInputSchema = z.strictObject({
+  actor: z.enum(["CLIENT", "ADMIN"]),
+  appointment: appointmentEventSchema,
+});
+const terminalInvalidationInputSchema = z.strictObject({
+  appointmentId: z.uuid(),
+  code: z.enum(["APPOINTMENT_COMPLETED", "APPOINTMENT_NO_SHOW"]),
+});
+
+export type AdminAppointmentCreatedProducerInput = z.input<typeof createdProducerInputSchema>;
+export type AppointmentCancelledProducerInput = z.input<typeof cancellationProducerInputSchema>;
+export type AppointmentTerminalInvalidationInput = z.input<typeof terminalInvalidationInputSchema>;
 
 export class TelegramBusinessProducerError extends Error {
   constructor(readonly code: "BUSINESS_PRODUCER_INPUT_INVALID" | "BUSINESS_PRODUCER_DATA_INVALID") {
@@ -41,8 +58,11 @@ function inputFailure(): never {
   throw new TelegramBusinessProducerError("BUSINESS_PRODUCER_INPUT_INVALID");
 }
 
-function checkedInput(rawInput: unknown) {
-  const parsed = producerInputSchema.safeParse(rawInput);
+function checkedInput<Schema extends z.ZodType>(
+  schema: Schema,
+  rawInput: unknown,
+): z.output<Schema> {
+  const parsed = schema.safeParse(rawInput);
   if (!parsed.success) inputFailure();
   return parsed.data;
 }
@@ -99,7 +119,7 @@ export async function produceAdminAppointmentCreated(
   tx: Prisma.TransactionClient,
   rawInput: AdminAppointmentCreatedProducerInput,
 ): Promise<{ created: number }> {
-  const input = checkedInput(rawInput);
+  const input = checkedInput(createdProducerInputSchema, rawInput);
   const recipients = await tx.adminTelegramConnection.findMany({
     where: { disabledAt: null, adminUser: { isActive: true } },
     select: { id: true },
@@ -162,4 +182,159 @@ export async function produceAdminAppointmentCreated(
     })),
   });
   return { created: created.count };
+}
+
+// Invalidates the old reminder and creates every cancellation notification in the caller's
+// business transaction. One database timestamp is shared by invalidation and the entire fan-out.
+export async function produceAppointmentCancelled(
+  tx: Prisma.TransactionClient,
+  rawInput: AppointmentCancelledProducerInput,
+): Promise<{
+  adminCreated: number;
+  clientCreated: number;
+  reminderCancelled: number;
+  reminderInvalidated: number;
+}> {
+  const input = checkedInput(cancellationProducerInputSchema, rawInput);
+  // Stabilize active administrative recipients through COMMIT. A concurrent disable/deactivate
+  // either wins before this read and is excluded, or waits and invalidates the newly committed job.
+  const adminRecipients = await tx.$queryRaw<{ id: string }[]>`
+    SELECT c.id
+    FROM admin_telegram_connections c
+    JOIN admin_users a ON a.id = c.admin_user_id
+    WHERE c.disabled_at IS NULL AND a.is_active = true
+    ORDER BY c.id
+    FOR SHARE OF c, a
+  `;
+  const clientRecipient =
+    input.actor === "ADMIN"
+      ? await tx.appointmentTelegramConnection.findFirst({
+          where: { appointmentId: input.appointment.id, disabledAt: null },
+          select: { id: true },
+        })
+      : null;
+  const occurredAt = await databaseNow(tx);
+  const invalidation = await invalidateTelegramOutbox(tx, {
+    target: {
+      kind: "APPOINTMENT",
+      id: input.appointment.id,
+      types: ["CLIENT_APPOINTMENT_REMINDER"],
+    },
+    code: "APPOINTMENT_CANCELLED",
+    now: occurredAt,
+  });
+  const visit = buildVisitSnapshotV1(input.appointment);
+  const adminPayload = parseTelegramPayloadV1({
+    notificationType: "ADMIN_APPOINTMENT_CANCELLED",
+    payloadVersion: 1,
+    payload: {
+      actor: input.actor,
+      appointmentVersion: input.appointment.version,
+      occurredAt: occurredAt.toISOString(),
+      visit,
+    },
+  });
+  if (!adminPayload.ok) inputFailure();
+
+  const jobs: Prisma.NotificationOutboxCreateManyInput[] = adminRecipients.map(
+    ({ id: adminConnectionId }) => ({
+      recipientKind: "ADMIN_CONNECTION" as const,
+      appointmentId: input.appointment.id,
+      appointmentConnectionId: null,
+      adminConnectionId,
+      directChatId: null,
+      type: "ADMIN_APPOINTMENT_CANCELLED" as const,
+      status: "PENDING" as const,
+      scheduledAt: occurredAt,
+      nextAttemptAt: occurredAt,
+      expiresAt: null,
+      attempts: 0,
+      leaseToken: null,
+      leaseOwner: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      invalidatedAt: null,
+      invalidationCode: null,
+      lastErrorCode: null,
+      payloadVersion: 1,
+      payload: adminPayload.payload,
+      dedupeKey: buildAdminAppointmentCancelledDedupeKey({
+        appointmentId: input.appointment.id,
+        version: input.appointment.version,
+        adminConnectionId,
+      }),
+      sentAt: null,
+      finishedAt: null,
+    }),
+  );
+
+  if (clientRecipient) {
+    const clientPayload = parseTelegramPayloadV1({
+      notificationType: "CLIENT_APPOINTMENT_CANCELLED",
+      payloadVersion: 1,
+      payload: {
+        actor: "ADMIN",
+        appointmentVersion: input.appointment.version,
+        occurredAt: occurredAt.toISOString(),
+        visit,
+      },
+    });
+    if (!clientPayload.ok) inputFailure();
+    jobs.push({
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: input.appointment.id,
+      appointmentConnectionId: clientRecipient.id,
+      adminConnectionId: null,
+      directChatId: null,
+      type: "CLIENT_APPOINTMENT_CANCELLED",
+      status: "PENDING",
+      scheduledAt: occurredAt,
+      nextAttemptAt: occurredAt,
+      expiresAt: null,
+      attempts: 0,
+      leaseToken: null,
+      leaseOwner: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      invalidatedAt: null,
+      invalidationCode: null,
+      lastErrorCode: null,
+      payloadVersion: 1,
+      payload: clientPayload.payload,
+      dedupeKey: buildClientAppointmentCancelledDedupeKey({
+        appointmentId: input.appointment.id,
+        version: input.appointment.version,
+        appointmentConnectionId: clientRecipient.id,
+      }),
+      sentAt: null,
+      finishedAt: null,
+    });
+  }
+
+  if (jobs.length > 0) {
+    await tx.notificationOutbox.createMany({ data: jobs });
+  }
+  return {
+    adminCreated: adminRecipients.length,
+    clientCreated: clientRecipient ? 1 : 0,
+    reminderCancelled: invalidation.cancelled,
+    reminderInvalidated: invalidation.invalidated,
+  };
+}
+
+export async function invalidateAppointmentReminderForTerminalStatus(
+  tx: Prisma.TransactionClient,
+  rawInput: AppointmentTerminalInvalidationInput,
+): Promise<{ cancelled: number; invalidated: number }> {
+  const input = checkedInput(terminalInvalidationInputSchema, rawInput);
+  const occurredAt = await databaseNow(tx);
+  return invalidateTelegramOutbox(tx, {
+    target: {
+      kind: "APPOINTMENT",
+      id: input.appointmentId,
+      types: ["CLIENT_APPOINTMENT_REMINDER"],
+    },
+    code: input.code,
+    now: occurredAt,
+  });
 }

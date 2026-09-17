@@ -1433,3 +1433,65 @@ ADR-0014 остаётся `Proposed`; этап 06 целиком не завер
 06.4A только создаёт `ADMIN_APPOINTMENT_CREATED` при новом Appointment. Отмена,
 перенос, клиентские changed/reminder jobs, dispatcher, `sendMessage`, retry доставки и
 message builder не реализованы; внешняя отправка отсутствует. Следующая задача — 06.4B.
+
+## Этап 06.4B — отмена Appointment и terminal invalidation (2026-09-17)
+
+Исходный commit: `165e34090e52d971c6473ef739fe89aed3b1b054`. Работа выполнена в
+текущем дереве без commit и push.
+
+### Реализовано
+
+- После первого клиентского перехода `SCHEDULED → CANCELLED` producer в той же
+  транзакции инвалидирует только `CLIENT_APPOINTMENT_REMINDER` кодом
+  `APPOINTMENT_CANCELLED` и создаёт `ADMIN_APPOINTMENT_CANCELLED` с
+  `actor: CLIENT` для каждой active connection активного администратора. Клиентская
+  cancellation job инициатору не создаётся; ветка `alreadyCancelled` остаётся до
+  producer и не изменяет outbox.
+- После первого административного перехода `SCHEDULED → CANCELLED` тот же producer
+  создаёт административный fan-out с `actor: ADMIN`, включая connection автора, и
+  одну `CLIENT_APPOINTMENT_CANCELLED` для active immutable
+  `AppointmentTelegramConnection`. Disabled и исторические connections исключены.
+- Переходы в `COMPLETED` и `NO_SHOW` только инвалидируют reminder кодами
+  `APPOINTMENT_COMPLETED` и `APPOINTMENT_NO_SHOW`; административные и клиентские
+  jobs не создаются. Повторная коррекция между terminal-статусами не затирает первое
+  invalidation-состояние. Contact-only edit не создаёт и не инвалидирует jobs.
+- Cancellation producer использует одно `clock_timestamp()::timestamptz(3)` для
+  invalidation и всего fan-out, точный `VisitSnapshotV1`, runtime-валидацию payload v1
+  и существующие cancellation dedupe helpers. Payload не содержит имени/телефона
+  клиента, причины, цены, URL, credentials, Telegram user/chat id или внутренних полей.
+- `PENDING` reminder становится `CANCELLED` с `invalidatedAt`,
+  `invalidationCode` и `finishedAt`; `PROCESSING` сохраняет status и lease, но
+  получает invalidation-пару. Для этого переиспользован существующий
+  `invalidateTelegramOutbox`.
+- Appointment, history, invalidation и все cancellation jobs фиксируются одним COMMIT.
+  `createMany` вызывается без `skipDuplicates`, поэтому database/UNIQUE failure
+  откатывает изменение статуса, history, reminder и весь fan-out. Существующий порядок
+  административных business/settings/appointment locks сохранён; после ожидания
+  административный доступ дополнительно удерживается `FOR SHARE` до COMMIT.
+- Добавлены unit, PostgreSQL integration и E2E проверки actor/recipients/snapshot/dedupe,
+  PENDING/PROCESSING invalidation, replay, terminal corrections, contact-only edit,
+  duplicate rollback и конкурентных клиентских отмен. Реальные fetch/Telegram-вызовы
+  не выполняются.
+- Prisma schema, migrations, зависимости и статус ADR-0014 не изменялись.
+
+### Проверки
+
+- Узкий producer unit-набор: **13/13**; новый PostgreSQL cancellation-набор:
+  **7/7**; изменённые client/admin E2E-файлы: **48/48**.
+- Полный unit-набор: **644/644**, 54 файла. Полный PostgreSQL runner:
+  **1130/1130**, 80 файлов. Полный Playwright E2E: **135/135**.
+- Успешно прошли `npm run format:check`, `npm run lint`,
+  `npm run typecheck`, `npm run build`, `npm exec -- prisma validate`,
+  `docker compose config` и `git diff --check`. PostgreSQL и E2E runner запускались с
+  явными локальными `PUBLIC_ORIGIN` из `.env.example`/Playwright-конфигурации,
+  поскольку локальный `.env` отсутствует.
+- После runner не осталось `zaprosto_test_*` баз и production advisory lock
+  `(526008, 61)`.
+
+### Границы и продолжение
+
+Dispatcher, `sendMessage`, message builder, rate limiter, delivery retry и внешняя
+отправка по-прежнему отсутствуют. Перенос Appointment,
+`CLIENT_APPOINTMENT_CHANGED` и пересоздание reminder не входят в 06.4B.
+Следующая задача — 06.4C: перенос Appointment, клиентское уведомление об изменении и
+пересоздание reminder.

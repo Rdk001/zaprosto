@@ -8,6 +8,7 @@ import {
 } from "../../booking/domain/booking-input";
 import { hashBookingToken } from "../../booking/server/booking-security";
 import { systemClock, type Clock } from "../../scheduling/server/availability-service";
+import { produceAppointmentCancelled } from "../../telegram/server/business-producer";
 import { confirmationSelect, toConfirmation, type AppointmentConfirmation } from "./confirmation";
 
 export type ConfirmationResult =
@@ -73,6 +74,25 @@ export class ClientAppointmentService {
                 changedBy: "CLIENT",
                 changedAt: cancelledAt,
                 reason: cancellationReason,
+              },
+            });
+            const settings = await tx.businessSettings.findUniqueOrThrow({
+              where: { id: 1 },
+              select: { timezone: true },
+            });
+            await produceAppointmentCancelled(tx, {
+              actor: "CLIENT",
+              appointment: {
+                id: appointment.id,
+                version: appointment.version,
+                serviceId: appointment.serviceId,
+                masterId: appointment.master.id,
+                startsAt: appointment.startsAt,
+                endsAt: appointment.endsAt,
+                durationMinutes: appointment.serviceDurationSnapshot,
+                businessTimeZone: settings.timezone,
+                serviceName: appointment.serviceNameSnapshot,
+                masterName: appointment.master.name,
               },
             });
             return { ok: true, alreadyCancelled: false, confirmation: toConfirmation(appointment) };

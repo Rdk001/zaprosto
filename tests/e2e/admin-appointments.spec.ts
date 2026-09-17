@@ -19,6 +19,10 @@ const db = createPrismaClient(url);
 const credentials = { login: "appointments.e2e", password: randomBytes(24).toString("base64url") };
 let passwordHash: string, id: string, serviceId: string, clientToken: string;
 async function clear() {
+  await db.notificationOutbox.deleteMany();
+  await db.telegramLinkToken.deleteMany();
+  await db.appointmentTelegramConnection.deleteMany();
+  await db.adminTelegramConnection.deleteMany();
   await db.appointment.deleteMany();
   await db.bookingRequest.deleteMany();
   await db.master.deleteMany();
@@ -211,6 +215,55 @@ test("list and history pagination preserve filters and do not truncate", async (
 test("confirmed cancellation, keyboard, full navigation, history and responsive detail", async ({
   page,
 }, info) => {
+  const author = await db.adminUser.findUniqueOrThrow({ where: { login: credentials.login } });
+  const other = await db.adminUser.create({
+    data: { login: `appointments-other-${randomUUID()}@example.test`, passwordHash: "not-used" },
+  });
+  const adminConnections = await Promise.all(
+    [author.id, other.id].map((adminUserId, index) =>
+      db.adminTelegramConnection.create({
+        data: {
+          adminUserId,
+          telegramUserId: BigInt(8_000_000_000 + index),
+          telegramChatId: BigInt(8_000_000_000 + index),
+          sourceUpdateId: BigInt(8_100_000_000 + index),
+          connectedAt: new Date(),
+        },
+      }),
+    ),
+  );
+  const appointment = await db.appointment.findUniqueOrThrow({ where: { id } });
+  const clientConnection = await db.appointmentTelegramConnection.create({
+    data: {
+      appointmentId: id,
+      telegramUserId: 8_200_000_000n,
+      telegramChatId: 8_200_000_000n,
+      sourceUpdateId: 8_300_000_000n,
+      connectedAt: new Date(),
+    },
+  });
+  const reminder = await db.notificationOutbox.create({
+    data: {
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: id,
+      appointmentConnectionId: clientConnection.id,
+      type: "CLIENT_APPOINTMENT_REMINDER",
+      scheduledAt: new Date(),
+      nextAttemptAt: new Date(),
+      expiresAt: new Date(Date.now() + 15 * 60_000),
+      payload: {
+        visitVersion: appointment.version,
+        expectedVisit: {
+          serviceId: appointment.serviceId,
+          masterId: appointment.masterId,
+          startsAt: appointment.startsAt.toISOString(),
+          endsAt: appointment.endsAt.toISOString(),
+          durationMinutes: appointment.serviceDurationSnapshot,
+        },
+      },
+      dedupeKey: `admin-appointments-e2e-reminder-${id}`,
+    },
+  });
   await login(page);
   await page.goto(path());
   await page.getByLabel("Новый статус").selectOption("CANCELLED");
@@ -244,6 +297,24 @@ test("confirmed cancellation, keyboard, full navigation, history and responsive 
   expect(a.statusHistory).toHaveLength(2);
   expect(a.version).toBe(1);
   expect(a.cancelledBy).toBe("ADMIN");
+  const adminJobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: id, type: "ADMIN_APPOINTMENT_CANCELLED" },
+  });
+  expect(adminJobs).toHaveLength(2);
+  expect(adminJobs.map((job) => job.adminConnectionId).sort()).toEqual(
+    adminConnections.map((connection) => connection.id).sort(),
+  );
+  const clientJobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: id, type: "CLIENT_APPOINTMENT_CANCELLED" },
+  });
+  expect(clientJobs).toHaveLength(1);
+  expect(clientJobs[0]!.appointmentConnectionId).toBe(clientConnection.id);
+  await expect(
+    db.notificationOutbox.findUniqueOrThrow({ where: { id: reminder.id } }),
+  ).resolves.toMatchObject({
+    status: "CANCELLED",
+    invalidationCode: "APPOINTMENT_CANCELLED",
+  });
 });
 test("result corrections and future result error focus", async ({ page }) => {
   await login(page);

@@ -17,6 +17,10 @@ import {
   type AdminRescheduleMutationResult,
 } from "../../modules/appointments/server/admin-reschedule-service";
 import { settingsSelect, businessContextHash } from "../../modules/settings/server/context";
+import {
+  invalidateAppointmentReminderForTerminalStatus,
+  produceAppointmentCancelled,
+} from "../../modules/telegram/server/business-producer";
 import { validOrigin } from "../public/security";
 
 type MutationResult =
@@ -127,7 +131,9 @@ export function createAppointmentsBoundary(db: PrismaClient) {
             if (!statusTimeAllowed(input.status, current.startsAt, now))
               return { ok: false, code: "NOT_STARTED" };
             const reason = input.reason || null;
-            await tx.appointment.update({
+            const stableAdmin = await getActiveAdminForShare(tx, token);
+            if (!stableAdmin) return { ok: false, code: "UNAUTHORIZED" };
+            const appointment = await tx.appointment.update({
               where: { id: input.id, version: input.version },
               data: {
                 status: input.status,
@@ -136,7 +142,16 @@ export function createAppointmentsBoundary(db: PrismaClient) {
                   ? { cancelledAt: now, cancelledBy: "ADMIN", cancellationReason: reason }
                   : {}),
               },
-              select: { id: true },
+              select: {
+                id: true,
+                version: true,
+                serviceId: true,
+                startsAt: true,
+                endsAt: true,
+                serviceNameSnapshot: true,
+                serviceDurationSnapshot: true,
+                master: { select: { id: true, name: true } },
+              },
             });
             await tx.appointmentStatusHistory.create({
               data: {
@@ -145,11 +160,34 @@ export function createAppointmentsBoundary(db: PrismaClient) {
                 newStatus: input.status,
                 changedAt: now,
                 changedBy: "ADMIN",
-                changedByAdminId: admin.id,
+                changedByAdminId: stableAdmin.id,
                 reason,
               },
               select: { id: true },
             });
+            if (input.status === "CANCELLED") {
+              await produceAppointmentCancelled(tx, {
+                actor: "ADMIN",
+                appointment: {
+                  id: appointment.id,
+                  version: appointment.version,
+                  serviceId: appointment.serviceId,
+                  masterId: appointment.master.id,
+                  startsAt: appointment.startsAt,
+                  endsAt: appointment.endsAt,
+                  durationMinutes: appointment.serviceDurationSnapshot,
+                  businessTimeZone: settings.timezone,
+                  serviceName: appointment.serviceNameSnapshot,
+                  masterName: appointment.master.name,
+                },
+              });
+            } else {
+              await invalidateAppointmentReminderForTerminalStatus(tx, {
+                appointmentId: appointment.id,
+                code:
+                  input.status === "COMPLETED" ? "APPOINTMENT_COMPLETED" : "APPOINTMENT_NO_SHOW",
+              });
+            }
             return { ok: true, status: input.status };
           },
           { isolationLevel: "ReadCommitted", maxWait: 5000, timeout: 10000 },

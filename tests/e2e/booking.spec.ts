@@ -83,6 +83,39 @@ test("конкретный мастер, подтверждение и явна�
   await expect(region).toContainText("+79990000000");
   const href = await page.getByRole("link", { name: "Открыть мою запись ↗" }).getAttribute("href");
   expect(href).toMatch(/^\/appointment#[A-Za-z0-9_-]{43}$/);
+  const appointment = await db.appointment.findFirstOrThrow();
+  const adminConnections = await Promise.all([connectAdmin(101), connectAdmin(102)]);
+  const clientConnection = await db.appointmentTelegramConnection.create({
+    data: {
+      appointmentId: appointment.id,
+      telegramUserId: 9_200_000_001n,
+      telegramChatId: 9_200_000_001n,
+      sourceUpdateId: 9_300_000_001n,
+      connectedAt: new Date(),
+    },
+  });
+  const reminder = await db.notificationOutbox.create({
+    data: {
+      recipientKind: "APPOINTMENT_CONNECTION",
+      appointmentId: appointment.id,
+      appointmentConnectionId: clientConnection.id,
+      type: "CLIENT_APPOINTMENT_REMINDER",
+      scheduledAt: new Date(),
+      nextAttemptAt: new Date(),
+      expiresAt: new Date(Date.now() + 15 * 60_000),
+      payload: {
+        visitVersion: appointment.version,
+        expectedVisit: {
+          serviceId: appointment.serviceId,
+          masterId: appointment.masterId,
+          startsAt: appointment.startsAt.toISOString(),
+          endsAt: appointment.endsAt.toISOString(),
+          durationMinutes: appointment.serviceDurationSnapshot,
+        },
+      },
+      dedupeKey: `booking-e2e-reminder-${appointment.id}`,
+    },
+  });
   const response = await request.get("/appointment", { headers: { purpose: "prefetch" } });
   expect(response.headers()["cache-control"]).toContain("no-store");
   expect(response.headers()["referrer-policy"]).toBe("no-referrer");
@@ -101,6 +134,24 @@ test("конкретный мастер, подтверждение и явна�
     page.getByText("Эта запись уже отменена. Повторная отмена не требуется."),
   ).toBeVisible();
   expect(await db.appointmentStatusHistory.count({ where: { newStatus: "CANCELLED" } })).toBe(1);
+  const cancellationJobs = await db.notificationOutbox.findMany({
+    where: { appointmentId: appointment.id, type: "ADMIN_APPOINTMENT_CANCELLED" },
+  });
+  expect(cancellationJobs).toHaveLength(2);
+  expect(cancellationJobs.map((job) => job.adminConnectionId).sort()).toEqual(
+    adminConnections.map((connection) => connection.id).sort(),
+  );
+  expect(
+    await db.notificationOutbox.count({
+      where: { appointmentId: appointment.id, type: "CLIENT_APPOINTMENT_CANCELLED" },
+    }),
+  ).toBe(0);
+  await expect(
+    db.notificationOutbox.findUniqueOrThrow({ where: { id: reminder.id } }),
+  ).resolves.toMatchObject({
+    status: "CANCELLED",
+    invalidationCode: "APPOINTMENT_CANCELLED",
+  });
 });
 test("клиент подключает и отключает Telegram по защищённой странице", async ({ page }) => {
   await toTime(page);
