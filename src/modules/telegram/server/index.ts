@@ -6,6 +6,7 @@ export {
 export { AppointmentTelegramService } from "./appointment-connection-service";
 export { TelegramBotStateError, TelegramBotStateRepository } from "./bot-state-repository";
 export { createTelegramFetchTransport } from "./fetch-transport";
+export { TelegramDeliveryPreflight, TelegramDeliveryPreflightError } from "./delivery-preflight";
 export { TelegramLinkRepository, TelegramLinkRepositoryError } from "./link-repository";
 export { TelegramLinkService, TelegramLinkServiceError } from "./link-service";
 export {
@@ -42,6 +43,10 @@ export type {
   TelegramWebhookInfo,
 } from "./bot-api";
 export type { TelegramBotStateSnapshot, TelegramBotStateStore } from "./bot-state-repository";
+export type {
+  TelegramDeliveryPreflightInput,
+  TelegramDeliveryPreflightResult,
+} from "./delivery-preflight";
 export type {
   TelegramAdminLinkRepositoryResult,
   TelegramAppointmentLinkRepositoryResult,

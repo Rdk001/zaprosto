@@ -48,6 +48,19 @@ export type OutboxPayloadCheck =
   | { ok: true; payloadVersion: 1 }
   | { ok: false; code: "PAYLOAD_VERSION_UNSUPPORTED" | "RESPONSE_INVALID" };
 
+export function outboxInvalidationSkipCode(code: OutboxInvalidationCode): OutboxSkipCode {
+  switch (code) {
+    case "APPOINTMENT_CANCELLED":
+    case "APPOINTMENT_COMPLETED":
+    case "APPOINTMENT_NO_SHOW":
+      return "APPOINTMENT_NOT_SCHEDULED";
+    case "VISIT_CHANGED":
+      return "VISIT_MISMATCH";
+    default:
+      return "CONNECTION_INACTIVE";
+  }
+}
+
 // Lifecycle DTO only. Payload, recipient identities and dedupe keys never leave this repository.
 export type ClaimedOutboxJob = {
   id: string;

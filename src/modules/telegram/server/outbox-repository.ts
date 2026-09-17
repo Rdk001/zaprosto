@@ -12,6 +12,7 @@ import {
   claimOutboxSchema,
   finishOutboxSchema,
   invalidateOutboxSchema,
+  outboxInvalidationSkipCode,
   outboxOwnerSchema,
   outboxTimestampSchema,
   outboxUuidSchema,
@@ -20,8 +21,6 @@ import {
   type ClaimOutboxInput,
   type FinishOutboxInput,
   type InvalidateOutboxInput,
-  type OutboxInvalidationCode,
-  type OutboxSkipCode,
   type OutboxTransitionResult,
   type RecoveredOutboxJob,
 } from "./outbox-contract";
@@ -63,19 +62,6 @@ function readRow(raw: unknown): OutboxRow {
   return row;
 }
 
-function invalidationSkipCode(code: OutboxInvalidationCode): OutboxSkipCode {
-  switch (code) {
-    case "APPOINTMENT_CANCELLED":
-    case "APPOINTMENT_COMPLETED":
-    case "APPOINTMENT_NO_SHOW":
-      return "APPOINTMENT_NOT_SCHEDULED";
-    case "VISIT_CHANGED":
-      return "VISIT_MISMATCH";
-    default:
-      return "CONNECTION_INACTIVE";
-  }
-}
-
 type Change = {
   status: "PENDING" | "SENT" | "DEAD" | "SKIPPED";
   nextAttemptAt: Date;
@@ -92,7 +78,11 @@ function retryChange(
 ): Change {
   const base = { nextAttemptAt: row.nextAttemptAt, attempts: row.attempts };
   if (row.invalidationCode !== null) {
-    return { ...base, status: "SKIPPED", errorCode: invalidationSkipCode(row.invalidationCode) };
+    return {
+      ...base,
+      status: "SKIPPED",
+      errorCode: outboxInvalidationSkipCode(row.invalidationCode),
+    };
   }
   if (row.expiresAt !== null && row.expiresAt.getTime() < now.getTime()) {
     return { ...base, status: "SKIPPED", errorCode: "REMINDER_EXPIRED" };
@@ -266,7 +256,7 @@ export class TelegramOutboxRepository {
             command.outcome === "CONFIGURATION_FAILURE"
               ? Math.max(0, row.attempts - 1)
               : row.attempts,
-          errorCode: invalidationSkipCode(row.invalidationCode),
+          errorCode: outboxInvalidationSkipCode(row.invalidationCode),
         };
       } else if (command.outcome === "CONFIGURATION_FAILURE") {
         const retryAt = checkedOutboxInput(

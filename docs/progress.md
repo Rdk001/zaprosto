@@ -1591,3 +1591,55 @@ commit и push.
 Delivery preflight, чтение Appointment/connections, dispatcher, claim/recovery,
 `sendMessage`, retry/backoff, rate limiter, cleanup и реальные Telegram-запросы не
 реализовывались. Следующая задача — 06.5B: delivery preflight.
+
+## Этап 06.5B — delivery preflight для Telegram outbox (2026-09-17)
+
+Исходный commit: `14f408a5f5f910a2481ba4dc59891d24d05e2e5c`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- Добавлен строгий результат preflight: `READY` содержит только immutable `chatId` и
+  готовый `text`; `SKIP` — существующий `OutboxSkipCode`; `DEAD` — только
+  `PAYLOAD_VERSION_UNSUPPORTED` или `RESPONSE_INVALID`; потерянная lease возвращает
+  `LEASE_LOST`.
+- Один короткий read-only PostgreSQL query повторно читает job по `jobId`, получает DB
+  clock и согласованный snapshot указанной connection, AdminUser, Appointment, Master и
+  BusinessSettings. Проверяются `PROCESSING`, lease token, `claimedAt`,
+  `leaseExpiresAt`, invalidation/deadline и точная recipient-матрица для всех восьми
+  notification types. Общий mapping invalidation вынесен из outbox repository и
+  переиспользуется без второй реализации.
+- Appointment recipient обязан ссылаться на ту же Appointment и активную immutable
+  connection; admin recipient — на активную connection активного AdminUser; direct
+  rejection использует только сохранённый `directChatId` и обязательный expiry.
+  Snapshot-события не подменяются текущим состоянием Appointment. Confirmation получает
+  минимальный live-контекст с timezone, service snapshot и публичным именем мастера.
+- Reminder дополнительно требует `SCHEDULED`, точное совпадение starts/ends/service/master/
+  duration, `scheduledAt = startsAt - 2 часа`, незавершённый deadline и DB time строго до
+  `startsAt`. Общая Appointment.version намеренно не сравнивается с `visitVersion`.
+- Payload повторно проходит `parseTelegramPayloadV1`, затем вызывается готовый
+  `buildTelegramMessage`. Preflight не возвращает raw payload, Prisma-модели, PII,
+  Telegram user ID, dedupe key, driver/Zod details или SQL.
+- Preflight не изменяет outbox, Appointment или connections, не удерживает row locks и не
+  выполняет сеть. `sendMessage`, dispatcher loop, retry/backoff, rate limiter, recovery и
+  cleanup не добавлялись; Prisma schema, миграции, зависимости и ADR-0014 не изменялись.
+
+### Проверки
+
+- Новый unit-файл чистой классификации: **23/23**.
+- Новый отдельный PostgreSQL integration-файл: **10/10** в автоматически созданной и
+  удалённой `zaprosto_test_*` базе.
+- Целевые проверки покрывают все восемь READY-путей, immutable chat ID, inactive
+  connections/AdminUser, direct recipient без connection, payload/lease/invalidation,
+  отсутствие mutation и сети, reminder identity/schedule/deadline, contact-only version
+  bump, cancellation/reschedule и перенос туда-обратно.
+- Выполнены `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run build` и `git diff --check`. Полные `npm test`, `test:unit`,
+  `test:postgres` и `test:e2e` отложены до финальной приёмки.
+
+### Границы и продолжение
+
+Следующая задача — dispatcher/delivery orchestration: вызов `sendMessage` после READY и
+передача SKIP/DEAD в существующий fenced finish. Retry/backoff, rate limiter, worker pool,
+lease recovery и disable-on-permanent-chat-error остаются за границами 06.5B.
