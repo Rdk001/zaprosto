@@ -633,3 +633,40 @@ session locks. Исходная ошибка callback повторно выбр�
 
 Rate gate не заменяет обработку Telegram `429`: `retry_after` остаётся отдельным
 механизмом delivery retry следующего dispatcher-этапа.
+
+## Production dispatcher одного batch (06.5F)
+
+`TelegramDeliveryAttempt` теперь требует `TelegramDeliveryRateGate` как обязательную
+dependency. После `READY` только callback
+`rateGate.run({ chatId, signal }, gatedSignal => api.sendMessage(...))` имеет право
+вызвать `sendMessage`; актуальный `chatId` приходит только из preflight, caller signal
+передаётся gate, а API получает только объединённый gate signal. `LEASE_LOST`, `SKIP`
+и `DEAD` не входят в gate. Ошибка gate до подтверждённой отправки консервативно
+финализируется как `RETRY/DELIVERY_OUTCOME_UNKNOWN`; внутренних HTTP retry нет.
+Подтверждённый send и последующая ошибка `finish` не запускают gate или API повторно.
+
+`TelegramOutboxDispatcher` создаёт один криптографически случайный UUID `leaseOwner`
+на экземпляр и предоставляет только
+`dispatchOnce({ signal? }): Promise<TelegramOutboxDispatcherSummary>`. Единственная
+настройка `concurrency` строго ограничена диапазоном 1–20 и одновременно является
+точной capacity для `claimDue`. Один вызов делает не более одного claim и немедленно
+запускает каждый возвращённый job ровно один раз. Поэтому локального backlog между
+claim и attempt нет, а фактическая параллельность не превышает `concurrency`.
+
+Abort до начала не вызывает claim. После успешного claim весь batch синхронно передаётся
+в attempts до первого ожидания; если signal отменился на границе claim/start, все уже
+захваченные jobs всё равно считаются начатыми и получают этот уже отменённый signal.
+Так dispatcher не оставляет lease молча ждать recovery. Abort не создаёт второй claim,
+уже начатые attempts сами проходят существующий fencing/finish и dispatcher ждёт
+settlement всех. Ошибка одной job учитывается безопасным счётчиком и не отменяет соседей.
+
+Summary содержит только `claimed/started/completed`, ограниченные счётчики безопасных
+outcome и число ошибок attempt. В нём нет recipient данных, текста, payload, lease token,
+Telegram response или исходного исключения. Ошибка claim преобразуется в
+`DISPATCH_CLAIM_FAILED` без SQL/driver cause. Dispatcher не логирует произвольные
+`Error` и не содержит polling loop.
+
+06.5F не подключает dispatcher к `src/worker.ts`, не добавляет polling, периодический
+claim, `recoverExpired` scheduler, readiness/circuit breaker lifecycle или реальные
+Telegram-запросы. Следующий этап должен собрать worker lifecycle вокруг этого
+однобатчевого метода и отдельно запланировать recovery.

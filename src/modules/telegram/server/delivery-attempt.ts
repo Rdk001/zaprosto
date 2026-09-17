@@ -4,6 +4,7 @@ import type {
   TelegramDeliveryPreflight,
   TelegramDeliveryPreflightInput,
 } from "./delivery-preflight";
+import type { TelegramDeliveryRateGate } from "./delivery-rate-gate";
 import type { FinishOutboxInput, OutboxTransitionResult } from "./outbox-contract";
 import type { TelegramOutboxRepository } from "./outbox-repository";
 
@@ -18,6 +19,7 @@ export type TelegramDeliveryAttemptResult =
 type DeliveryPreflight = Pick<TelegramDeliveryPreflight, "check">;
 type DeliveryApi = Pick<TelegramBotApi, "sendMessage">;
 type DeliveryOutbox = Pick<TelegramOutboxRepository, "finish">;
+type DeliveryRateGate = Pick<TelegramDeliveryRateGate, "run">;
 
 const retryableCodes = new Set<TelegramAdapterErrorCode>([
   "NETWORK_UNREACHABLE",
@@ -69,6 +71,7 @@ export class TelegramDeliveryAttempt {
   constructor(
     private readonly dependencies: {
       preflight: DeliveryPreflight;
+      rateGate: DeliveryRateGate;
       api: DeliveryApi;
       outbox: DeliveryOutbox;
     },
@@ -87,9 +90,16 @@ export class TelegramDeliveryAttempt {
       command = { id: jobId, leaseToken, outcome: "DEAD", errorCode: preflight.code };
     } else {
       try {
-        await this.dependencies.api.sendMessage(
-          { chatId: preflight.chatId, text: preflight.text },
-          input.signal === undefined ? undefined : { signal: input.signal },
+        await this.dependencies.rateGate.run(
+          {
+            chatId: preflight.chatId,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          },
+          (gatedSignal) =>
+            this.dependencies.api.sendMessage(
+              { chatId: preflight.chatId, text: preflight.text },
+              { signal: gatedSignal },
+            ),
         );
         command = { id: jobId, leaseToken, outcome: "SENT" };
       } catch (error) {

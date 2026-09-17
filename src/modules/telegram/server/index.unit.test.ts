@@ -23,6 +23,8 @@ describe("Telegram production entrypoint", () => {
       "TelegramLinkRepositoryError",
       "TelegramLinkService",
       "TelegramLinkServiceError",
+      "TelegramOutboxDispatcher",
+      "TelegramOutboxDispatcherError",
       "TelegramPollingOrchestrator",
       "TelegramPollingStoreError",
       "TelegramStartProcessorError",

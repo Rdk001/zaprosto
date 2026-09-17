@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TelegramBotApiError, type TelegramBotApi } from "./bot-api";
 import { TelegramDeliveryAttempt } from "./delivery-attempt";
 import type { TelegramDeliveryPreflightResult } from "./delivery-preflight";
+import type { TelegramDeliveryRateGate } from "./delivery-rate-gate";
 import type { FinishOutboxInput, OutboxTransitionResult } from "./outbox-contract";
 
 const jobId = "11111111-1111-4111-8111-111111111111";
@@ -13,14 +14,24 @@ function setup(preflightResult: TelegramDeliveryPreflightResult) {
   const check = vi.fn().mockResolvedValue(preflightResult);
   const sendMessage = vi.fn<Pick<TelegramBotApi, "sendMessage">["sendMessage"]>();
   sendMessage.mockResolvedValue({ messageId: 42n });
+  const gateSignal = new AbortController().signal;
+  const rateGateRun = vi.fn(
+    async (
+      _input: { chatId: bigint; signal?: AbortSignal },
+      operation: (signal: AbortSignal) => Promise<unknown>,
+    ) => operation(gateSignal),
+  );
   const finish = vi.fn<(input: FinishOutboxInput) => Promise<OutboxTransitionResult>>();
   finish.mockResolvedValue(applied);
   const attempt = new TelegramDeliveryAttempt({
     preflight: { check },
+    rateGate: {
+      run: rateGateRun as unknown as Pick<TelegramDeliveryRateGate, "run">["run"],
+    },
     api: { sendMessage },
     outbox: { finish },
   });
-  return { attempt, check, sendMessage, finish };
+  return { attempt, check, rateGateRun, gateSignal, sendMessage, finish };
 }
 
 const run = (attempt: TelegramDeliveryAttempt, signal?: AbortSignal) =>
@@ -38,20 +49,22 @@ const apiError = (
 
 describe("TelegramDeliveryAttempt", () => {
   it("returns a preflight lease loss without sending or finishing", async () => {
-    const { attempt, sendMessage, finish } = setup({ kind: "LEASE_LOST" });
+    const { attempt, rateGateRun, sendMessage, finish } = setup({ kind: "LEASE_LOST" });
 
     await expect(run(attempt)).resolves.toEqual({ kind: "PREFLIGHT_LEASE_LOST" });
+    expect(rateGateRun).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect(finish).not.toHaveBeenCalled();
   });
 
   it("finishes a preflight skip without sending", async () => {
-    const { attempt, sendMessage, finish } = setup({
+    const { attempt, rateGateRun, sendMessage, finish } = setup({
       kind: "SKIP",
       code: "CONNECTION_INACTIVE",
     });
 
     await expect(run(attempt)).resolves.toEqual({ kind: "FINISHED", finish: applied });
+    expect(rateGateRun).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect(finish).toHaveBeenCalledOnce();
     expect(finish).toHaveBeenCalledWith({
@@ -63,12 +76,13 @@ describe("TelegramDeliveryAttempt", () => {
   });
 
   it("finishes a dead preflight without sending", async () => {
-    const { attempt, sendMessage, finish } = setup({
+    const { attempt, rateGateRun, sendMessage, finish } = setup({
       kind: "DEAD",
       code: "PAYLOAD_VERSION_UNSUPPORTED",
     });
 
     await expect(run(attempt)).resolves.toEqual({ kind: "FINISHED", finish: applied });
+    expect(rateGateRun).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect(finish).toHaveBeenCalledWith({
       id: jobId,
@@ -79,15 +93,20 @@ describe("TelegramDeliveryAttempt", () => {
   });
 
   it("sends READY exactly once and marks it sent", async () => {
-    const { attempt, sendMessage, finish } = setup({
+    const { attempt, rateGateRun, gateSignal, sendMessage, finish } = setup({
       kind: "READY",
       chatId: 123n,
       text: "ready",
     });
 
     await expect(run(attempt)).resolves.toEqual({ kind: "FINISHED", finish: applied });
+    expect(rateGateRun).toHaveBeenCalledOnce();
+    expect(rateGateRun).toHaveBeenCalledWith({ chatId: 123n }, expect.any(Function));
     expect(sendMessage).toHaveBeenCalledOnce();
-    expect(sendMessage).toHaveBeenCalledWith({ chatId: 123n, text: "ready" }, undefined);
+    expect(sendMessage).toHaveBeenCalledWith(
+      { chatId: 123n, text: "ready" },
+      { signal: gateSignal },
+    );
     expect(finish).toHaveBeenCalledOnce();
     expect(finish).toHaveBeenCalledWith({ id: jobId, leaseToken, outcome: "SENT" });
   });
@@ -195,24 +214,54 @@ describe("TelegramDeliveryAttempt", () => {
     });
   });
 
+  it("maps a gate failure conservatively without invoking sendMessage", async () => {
+    const { attempt, rateGateRun, sendMessage, finish } = setup({
+      kind: "READY",
+      chatId: 123n,
+      text: "x",
+    });
+    rateGateRun.mockRejectedValue(new Error("private gate detail"));
+
+    await expect(run(attempt)).resolves.toEqual({ kind: "FINISHED", finish: applied });
+
+    expect(rateGateRun).toHaveBeenCalledOnce();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledWith({
+      id: jobId,
+      leaseToken,
+      outcome: "RETRY",
+      errorCode: "DELIVERY_OUTCOME_UNKNOWN",
+    });
+  });
+
   it("returns the repository's actual lease-loss result without a second send", async () => {
-    const { attempt, sendMessage, finish } = setup({ kind: "READY", chatId: 123n, text: "x" });
+    const { attempt, rateGateRun, sendMessage, finish } = setup({
+      kind: "READY",
+      chatId: 123n,
+      text: "x",
+    });
     finish.mockResolvedValue({ kind: "LEASE_LOST" });
 
     await expect(run(attempt)).resolves.toEqual({
       kind: "FINISHED",
       finish: { kind: "LEASE_LOST" },
     });
+    expect(rateGateRun).toHaveBeenCalledOnce();
     expect(sendMessage).toHaveBeenCalledOnce();
     expect(finish).toHaveBeenCalledOnce();
   });
 
   it("raises a finish failure after a successful send without repeating either call", async () => {
-    const { attempt, sendMessage, finish } = setup({ kind: "READY", chatId: 123n, text: "x" });
+    const { attempt, rateGateRun, sendMessage, finish } = setup({
+      kind: "READY",
+      chatId: 123n,
+      text: "x",
+    });
     const storageFailure = new Error("storage unavailable");
     finish.mockRejectedValue(storageFailure);
 
     await expect(run(attempt)).rejects.toBe(storageFailure);
+    expect(rateGateRun).toHaveBeenCalledOnce();
     expect(sendMessage).toHaveBeenCalledOnce();
     expect(finish).toHaveBeenCalledOnce();
   });
@@ -227,12 +276,17 @@ describe("TelegramDeliveryAttempt", () => {
     expect(finish).not.toHaveBeenCalled();
   });
 
-  it("passes the caller's AbortSignal to Telegram", async () => {
-    const { attempt, sendMessage } = setup({ kind: "READY", chatId: 123n, text: "x" });
+  it("passes the caller's AbortSignal to the gate and the gate signal to Telegram", async () => {
+    const { attempt, rateGateRun, gateSignal, sendMessage } = setup({
+      kind: "READY",
+      chatId: 123n,
+      text: "x",
+    });
     const signal = new AbortController().signal;
 
     await run(attempt, signal);
 
-    expect(sendMessage).toHaveBeenCalledWith({ chatId: 123n, text: "x" }, { signal });
+    expect(rateGateRun).toHaveBeenCalledWith({ chatId: 123n, signal }, expect.any(Function));
+    expect(sendMessage).toHaveBeenCalledWith({ chatId: 123n, text: "x" }, { signal: gateSignal });
   });
 });

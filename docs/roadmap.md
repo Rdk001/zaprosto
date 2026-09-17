@@ -61,9 +61,17 @@ distributed rate limiter остаются следующими этапами.
 `PoolClient`, единый порядок chat → global, минимум 40 мс между общими стартами и
 1000 мс между стартами одного chat. HTTP выполняется без SQL-транзакции; потеря
 сессии отменяет защищённую операцию, а cleanup не превращает уже подтверждённый
-успех HTTP в неизвестную доставку. Gate пока не подключён к
-`TelegramDeliveryAttempt`, dispatcher или worker; Telegram `429/retry_after`
-остаётся отдельным retry-механизмом.
+успех HTTP в неизвестную доставку. На этапе 06.5E gate ещё не был подключён к
+`TelegramDeliveryAttempt`; Telegram `429/retry_after` остаётся отдельным
+retry-механизмом.
+
+**06.5F реализована.** `TelegramDeliveryAttempt` обязательно проводит каждый
+`READY` через PostgreSQL rate gate, и только callback gate вызывает единственный
+`sendMessage`. Добавлен dependency-injected `TelegramOutboxDispatcher.dispatchOnce`:
+один UUID owner на экземпляр, один bounded claim на batch, немедленный запуск всех
+claimed jobs без локального backlog, изоляция ошибок jobs, ожидание всех attempts и
+безопасный счётчиковый summary. Dispatcher пока не подключён к `src/worker.ts`;
+polling/lifecycle loop и `recoverExpired` scheduler остаются следующим этапом.
 
 ## 07. Подготовка MVP к демонстрации
 

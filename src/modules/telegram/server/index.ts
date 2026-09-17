@@ -1,6 +1,7 @@
 export { createTelegramBotApi, TelegramBotApiError } from "./bot-api";
 export { TelegramDeliveryAttempt } from "./delivery-attempt";
 export { TelegramDeliveryRateGate, TelegramDeliveryRateGateError } from "./delivery-rate-gate";
+export { TelegramOutboxDispatcher, TelegramOutboxDispatcherError } from "./outbox-dispatcher";
 export {
   AppointmentTelegramRepository,
   AppointmentTelegramRepositoryError,
@@ -59,6 +60,12 @@ export type {
   TelegramDeliveryRateGateInput,
   TelegramDeliveryRateGateLockSpace,
 } from "./delivery-rate-gate";
+export type {
+  TelegramOutboxDispatcherConfiguration,
+  TelegramOutboxDispatcherErrorCode,
+  TelegramOutboxDispatcherInput,
+  TelegramOutboxDispatcherSummary,
+} from "./outbox-dispatcher";
 export type {
   TelegramAdminLinkRepositoryResult,
   TelegramAppointmentLinkRepositoryResult,

@@ -30,6 +30,9 @@ async function claimedJob() {
 function attemptWith(sendMessage: Pick<TelegramBotApi, "sendMessage">["sendMessage"]) {
   return new TelegramDeliveryAttempt({
     preflight,
+    rateGate: {
+      run: async (_input, operation) => operation(new AbortController().signal),
+    },
     api: { sendMessage },
     outbox,
   });

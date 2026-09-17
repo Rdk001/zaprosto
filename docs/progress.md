@@ -1816,3 +1816,64 @@ production dispatcher, подключить gate к одной delivery attempt 
 не смешивая rate gate с обработкой Telegram `429/retry_after`. Claim loop, lease
 recovery scheduler, readiness/circuit breaker и реальные Telegram-запросы в 06.5E не
 добавлялись.
+
+## Этап 06.5F — production Telegram outbox dispatcher одного batch (2026-09-17)
+
+Исходный commit: `f4751d1453fc0e8297c26b2d20b4445da09e3c26`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- `TelegramDeliveryRateGate` стал обязательной dependency
+  `TelegramDeliveryAttempt`. Только callback gate вызывает `sendMessage`; gate
+  получает актуальный `chatId` preflight и caller signal, API получает gate signal.
+  `LEASE_LOST`, `SKIP` и `DEAD` не входят в gate.
+- Ошибка gate до подтверждённой доставки консервативно становится
+  `RETRY/DELIVERY_OUTCOME_UNKNOWN`. Существующий mapping Bot API, fenced finish,
+  disable-on-permanent-recipient-error, invalidation и at-least-once семантика
+  сохранены. Внутреннего HTTP retry нет; ошибка finish после успешного send не
+  повторяет gate/callback.
+- Добавлен `TelegramOutboxDispatcher.dispatchOnce({ signal? })`. Экземпляр один раз
+  генерирует криптографический UUID owner. Единственная строгая настройка
+  `concurrency` ограничена 1–20 и является точной claim capacity; один batch делает
+  максимум один claim и немедленно запускает весь возвращённый batch, поэтому
+  локального claimed backlog нет.
+- Abort до старта не вызывает claim. После commit claim все jobs синхронно передаются
+  attempt, даже если signal уже отменён на границе, затем dispatcher ждёт settlement
+  всех. Ошибка одной job не отменяет соседей.
+- Публичный summary содержит только `claimed/started/completed`, безопасные outcome
+  counters и `attemptFailed`. Recipient data, text, payload, lease token, Telegram
+  response, raw Error, SQL и connection string наружу не выходят. Claim failure
+  ограничен кодом `DISPATCH_CLAIM_FAILED`.
+- Новый dispatcher и его error экспортированы из Node-safe Telegram entrypoint.
+  Глобальные singleton, зависимости, миграции и изменения `src/worker.ts` не
+  добавлялись.
+
+### Проверки
+
+- Изменённые unit/entrypoint файлы: **39/39**.
+- Новый dispatcher PostgreSQL suite вместе с delivery-attempt и rate-gate suites:
+  **15/15** в автоматически созданной и удалённой `zaprosto_test_*` базе.
+- Проверены полный путь claim → preflight → gate → send → finish/SENT, отсутствие gate
+  для SKIP/DEAD, retry в PENDING, постоянная ошибка с отключением connection,
+  bounded capacity/concurrency, изоляция failing job и отсутствие advisory locks.
+- Полный unit-набор `npm run test:unit`: **752/752**. Прямой `npm test` подтвердил
+  те же **752/752** unit-теста и ожидаемо отказал integration imports без обязательного
+  isolated `TEST_DATABASE_URL`.
+- Полный PostgreSQL runner с `PUBLIC_ORIGIN` из `.env.example`: **1268 passed,
+  10 skipped**. Единственный failing suite — ранее зафиксированный межфайловый конфликт
+  `telegram-delivery-preflight.test.ts`: повторное создание
+  `business_settings(id=1)`, после чего cleanup видит неинициализированный fixture.
+  Целевые три файла отдельно прошли **15/15** на чистой временной базе.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  production `npm run build` web + worker и `git diff --check`. После runner
+  не осталось `zaprosto_test_*` баз и advisory locks. Playwright не запускался:
+  UI не менялся.
+
+### Границы и продолжение
+
+Dispatcher выполняет только один batch и не подключён к `src/worker.ts`. Бесконечный
+loop, периодический polling/claim, `recoverExpired` scheduler, readiness/circuit
+breaker lifecycle и реальные Telegram-запросы не добавлены. Следующий этап должен
+собрать lifecycle worker и recovery вокруг готового однобатчевого контракта.
