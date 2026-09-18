@@ -1877,3 +1877,58 @@ Dispatcher выполняет только один batch и не подключ
 loop, периодический polling/claim, `recoverExpired` scheduler, readiness/circuit
 breaker lifecycle и реальные Telegram-запросы не добавлены. Следующий этап должен
 собрать lifecycle worker и recovery вокруг готового однобатчевого контракта.
+
+## Этап 06.5G — lifecycle loop Telegram delivery и периодический recovery (2026-09-18)
+
+Исходный commit: `e60f204960a89c14c52564b6e57b431285e71d31`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- Добавлен отдельный dependency-injected `TelegramDeliveryOrchestrator` без
+  глобального singleton и связи с polling orchestrator. `run()` создаёт один Promise
+  loop на экземпляр, `stop()` идемпотентно abort-ит его и ждёт полного settlement
+  уже начатой recovery/dispatch работы; stop-before-run безопасен.
+- Стартовый recovery выполняется до первого dispatch. Дальнейший recovery следует
+  monotonic cadence без catch-up drain; один due tick вызывает ровно один bounded
+  `recoverExpired`, batch строго ограничен policy 20. Каждый delivery tick вызывает
+  ровно один `dispatchOnce({ signal })`; recovery и dispatch внутри экземпляра
+  никогда не пересекаются.
+- Между batches есть abortable pause. Ошибки recovery и dispatch логируют только
+  `TELEGRAM_DELIVERY_RECOVERY_FAILED` или
+  `TELEGRAM_DELIVERY_DISPATCH_FAILED`, затем получают bounded backoff. Исключение
+  logger не меняет control flow, исключение injected sleep безопасно завершает loop
+  без crash/busy-spin. Raw Error, SQL, connection string, chat/text/payload,
+  lease token, Telegram response и secrets наружу не передаются.
+- Зафиксированы production defaults: delivery pause 1000 мс, recovery 60 000 мс,
+  recovery batch 20, error backoff 1000 мс. Строгая конфигурация допускает интервалы
+  1 мс–24 часа и batch 1–20, что позволяет малые детерминированные тестовые значения.
+- Lifecycle, error/defaults и публичные типы экспортированы из Node-safe Telegram
+  entrypoint; контракт entrypoint обновлён. `src/worker.ts`, схема, миграции,
+  зависимости и реальные Telegram-вызовы не изменялись.
+
+### Проверки
+
+- Новый lifecycle unit-набор и изменённый entrypoint contract: **19/19**.
+- Целевой PostgreSQL integration-тест: **1/1** в автоматически созданной и удалённой
+  `zaprosto_test_*` базе. Стартовый recovery перевёл expired PROCESSING job в DEAD
+  по существующему max-attempts правилу, отдельная due job прошла настоящий
+  repository/dispatcher/preflight/attempt до SENT с fake Telegram API и
+  детерминированным fake rate gate. Медленный send не пересёкся со следующим tick,
+  abort дошёл до dispatcher, а stop дождался finish без новой локально захваченной
+  job без attempt.
+- После isolated runner отдельно подтверждены **0** временных `zaprosto_test_*` баз
+  и **0** advisory locks.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  production `npm run build` web + worker и `git diff --check`.
+- Полные `npm test`, `test:postgres` и Playwright намеренно не запускались:
+  изменён узкий lifecycle без UI, а лимит сохранён для финального аудита.
+
+### Границы и продолжение
+
+Модуль намеренно не подключён к `src/worker.ts`. Этап 06.5H должен выполнить
+production composition dispatcher/attempt/rate gate/API/repository, объединить
+polling и delivery в общем process shutdown и провести финальную runtime-проверку.
+Readiness/circuit breaker, изменения long polling и реальные Telegram-запросы в
+06.5G не добавлены.

@@ -1,5 +1,10 @@
 export { createTelegramBotApi, TelegramBotApiError } from "./bot-api";
 export { TelegramDeliveryAttempt } from "./delivery-attempt";
+export {
+  TELEGRAM_DELIVERY_ORCHESTRATOR_DEFAULTS,
+  TelegramDeliveryOrchestrator,
+  TelegramDeliveryOrchestratorError,
+} from "./delivery-orchestrator";
 export { TelegramDeliveryRateGate, TelegramDeliveryRateGateError } from "./delivery-rate-gate";
 export { TelegramOutboxDispatcher, TelegramOutboxDispatcherError } from "./outbox-dispatcher";
 export {
@@ -54,6 +59,13 @@ export type {
   TelegramDeliveryAttemptInput,
   TelegramDeliveryAttemptResult,
 } from "./delivery-attempt";
+export type {
+  TelegramDeliveryDiagnosticCode,
+  TelegramDeliveryLogger,
+  TelegramDeliveryOrchestratorConfiguration,
+  TelegramDeliveryOrchestratorDependencies,
+  TelegramDeliveryOrchestratorErrorCode,
+} from "./delivery-orchestrator";
 export type {
   TelegramDeliveryRateGateDependencies,
   TelegramDeliveryRateGateErrorCode,

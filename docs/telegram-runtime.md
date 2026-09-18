@@ -670,3 +670,36 @@ Telegram response или исходного исключения. Ошибка c
 claim, `recoverExpired` scheduler, readiness/circuit breaker lifecycle или реальные
 Telegram-запросы. Следующий этап должен собрать worker lifecycle вокруг этого
 однобатчевого метода и отдельно запланировать recovery.
+
+## Delivery lifecycle и периодический lease recovery (06.5G)
+
+`TelegramDeliveryOrchestrator` — отдельный dependency-injected lifecycle поверх
+`TelegramOutboxDispatcher.dispatchOnce` и `TelegramOutboxRepository.recoverExpired`.
+Он не является singleton и не связан с polling orchestrator. `run()` лениво создаёт
+ровно один Promise loop на экземпляр; повторный вызов возвращает тот же Promise.
+`stop()` идемпотентно abort-ит lifecycle и ждёт settlement текущего recovery либо
+всего уже начатого dispatcher batch. Вызов `stop()` до `run()` безопасен, а
+отменённый экземпляр больше не начинает работу.
+
+Один loop строго последователен. При старте он делает ровно один bounded
+`recoverExpired`, затем один `dispatchOnce({ signal })` на delivery tick и
+abortable pause. Recovery повторяется по monotonic cadence; пропущенные интервалы не
+создают catch-up drain, каждый due tick вызывает recovery только один раз. Recovery
+batch ограничен policy 20, а dispatcher сохраняет собственные claim/concurrency,
+retry/backoff/max-attempts и fencing правила.
+
+Production defaults: delivery pause 1000 мс, recovery cadence 60 000 мс, recovery
+batch 20 и error backoff 1000 мс. Все интервалы строго целочисленные в диапазоне
+1 мс–24 часа, batch — 1–20; конфигурация не допускает лишних полей. После ошибки
+dispatch или recovery loop логирует только
+`TELEGRAM_DELIVERY_DISPATCH_FAILED` либо
+`TELEGRAM_DELIVERY_RECOVERY_FAILED`, выдерживает bounded backoff и продолжает
+работу. Raw Error, SQL, connection string, recipient, text, payload, lease token,
+Telegram response и Bot Token не входят в diagnostics или публичные результаты.
+Исключение logger игнорируется; исключение injected sleep безопасно завершает loop,
+не создавая crash или busy-spin.
+
+Lifecycle пока не подключён к `src/worker.ts`. Этап 06.5H должен собрать production
+dependencies, совместный process shutdown polling и delivery и выполнить финальную
+runtime-проверку. Реальный Telegram API, новый readiness/circuit breaker, миграции и
+изменения long polling в 06.5G не добавлены.

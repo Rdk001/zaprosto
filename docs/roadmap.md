@@ -73,6 +73,14 @@ claimed jobs без локального backlog, изоляция ошибок 
 безопасный счётчиковый summary. Dispatcher пока не подключён к `src/worker.ts`;
 polling/lifecycle loop и `recoverExpired` scheduler остаются следующим этапом.
 
+**06.5G реализована.** Добавлен отдельный `TelegramDeliveryOrchestrator`: один
+идемпотентный последовательный loop, стартовый и monotonic-периодический bounded
+lease recovery, ровно один dispatcher batch на tick, abortable pause/backoff и
+безопасные allowlist diagnostics. Abort передаётся текущему dispatcher, а shutdown
+ждёт settlement всех уже начатых attempts и не запускает новую работу. Модуль пока
+не подключён к `src/worker.ts`; production composition, общий process shutdown и
+финальная runtime-проверка выделены в 06.5H.
+
 ## 07. Подготовка MVP к демонстрации
 
 Проверить критические сценарии на мобильных экранах, подготовить только вымышленные демонстрационные персональные данные, инструкции отдельного развёртывания для заказчика и обновить документацию.
