@@ -2043,3 +2043,58 @@ commit, push и реальной замены локального bot state.
 health/metrics и полный acceptance/security аудит этапа 06. Пользователи после
 реальной replacement должны подключиться заново; команда в этой задаче не запускалась
 против локального bot state.
+
+## Этап 06.6B — безопасный операторский переход Telegram webhook → long polling (2026-09-18)
+
+Исходный commit: `c013678fb4299efe5d72a85cd9bf25c392f52f62`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit, push и запуска реальной операторской команды.
+
+### Реализовано
+
+- Добавлена TTY-only команда `npm run telegram:delete-webhook`. Она не принимает
+  argv или pipe, читает token/username только существующим Telegram config parser,
+  предупреждает об удалении внешнего webhook и сохранении pending updates и требует
+  точное подтверждение `DELETE TELEGRAM WEBHOOK`.
+- Только после подтверждения команда берёт fail-fast exclusive maintenance lock.
+  Shared guard живого worker возвращает `WORKER_ACTIVE` до создания Bot API.
+  Exclusive session signal передаётся каждому вызову API, release выполняется в
+  `finally`, pool/Prisma cleanup идемпотентен.
+- Под lock сервис вызывает `getMe`, проверяет configured и сохранённую bot identity,
+  затем вызывает `getWebhookInfo`. Username сравниваются без учёта регистра, bot id —
+  точно; неинициализированная или другая identity не принимается автоматически.
+- Пустой webhook возвращает `NO_CHANGE` без delete. Активный webhook вызывает ровно
+  один `deleteWebhook({ dropPendingUpdates: false })` и обязательный повторный
+  `getWebhookInfo`. Только пустой post-check возвращает `TRANSITIONED`;
+  недоступный или активный post-check даёт `TRANSITION_UNCONFIRMED` без второго delete.
+- Команда не изменяет readiness, offset, connections, tokens или outbox jobs.
+  Active webhook продолжает блокировать только polling, но не delivery; после рестарта
+  worker сам проходит readiness и продолжает сохранённый offset.
+- Public result/output/error ограничены status и allowlist safe code. Token, webhook
+  URL, bot id/username, raw response, description, request URL и cause не возвращаются
+  и не логируются. Добавлен отдельный операторский runbook; обновлены ADR-0014,
+  технический план, runtime, roadmap и Node-safe exports.
+
+### Проверки
+
+- Целевой unit-набор service/command/entrypoint/Bot API/maintenance: **66/66**,
+  5 файлов. Проверены TTY/argv/pipe, exact confirmation, config и identity отказы,
+  case-only username, `NO_CHANGE`, точная API-последовательность, обязательный
+  `dropPendingUpdates: false`, post-check failure, session signal, single release и
+  secret/raw URL canaries.
+- Узкий PostgreSQL integration: **1/1** в автоматически созданной и удалённой
+  `zaprosto_test_*` БД. Реальный shared worker guard дал `WORKER_ACTIVE` до fake
+  API; после release exclusive session выполнила fake transition. После runner
+  отдельно подтверждены **0** временных тестовых БД и **0** maintenance advisory locks.
+- Успешны `npm run format:check`, `npm run lint`, post-build
+  `npm run typecheck`, `npm run worker:build`, production `npm run build`,
+  `docker compose config` и `git diff --check`.
+- Полные `npm test`, `test:postgres` и Playwright E2E не запускались по условию
+  задачи. Bot API во всех тестах был fake; сеть и реальные Telegram credentials не
+  использовались.
+
+### Границы и продолжение
+
+06.6B не добавляет cleanup/retention, health/metrics, UI, миграции или новые
+delivery/polling policy. Эти эксплуатационные задачи остаются 06.6C+ вместе с полным
+unit/PostgreSQL/E2E/security acceptance этапа 06. ADR-0014 остаётся `Proposed`.

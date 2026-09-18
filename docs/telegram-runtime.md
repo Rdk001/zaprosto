@@ -777,3 +777,36 @@ username обязан совпасть с настроенным без учёт
 переписываются. Конфликт singleton или любая ошибка откатывают всю транзакцию. Наружу
 выходят только safe status/code и bounded counts; новая identity и Telegram IDs не
 входят в result/logs.
+
+## Операторский переход webhook → long polling (06.6B)
+
+TTY-only команда `npm run telegram:delete-webhook` принимает token и username только
+из существующего `parseTelegramRuntimeConfiguration`. Любой argv, piped stdin или
+неинтерактивный stdout отклоняются. После предупреждения о внешнем удалении webhook,
+сохранении pending updates и будущем запуске polling требуется точное подтверждение
+`DELETE TELEGRAM WEBHOOK`.
+
+Только после подтверждения команда делает fail-fast
+`tryAcquireOperator()`. Живой shared worker guard возвращает `WORKER_ACTIVE` до
+создания API. Полученная exclusive session передаёт свой `AbortSignal` во все Bot API
+calls и всегда освобождается в `finally`.
+
+`TelegramWebhookTransitionService` под lock выполняет ровно один линейный протокол:
+`getMe → сохранённая TelegramBotState → getWebhookInfo`. Configured username,
+фактический username и сохранённый username сравниваются без учёта регистра, bot id —
+точно. Неинициализированная или несовпадающая identity не изменяется автоматически.
+Пустой webhook возвращает `NO_CHANGE`. Активный webhook вызывает ровно один
+`deleteWebhook({ dropPendingUpdates: false })`, затем обязательный
+`getWebhookInfo`; только пустой URL возвращает `TRANSITIONED`.
+
+Если delete завершился успешно, но post-check не выполнен или по-прежнему видит webhook,
+сервис возвращает `TRANSITION_UNCONFIRMED` и не повторяет delete. Потеря session до
+delete прекращает протокол с `MAINTENANCE_SESSION_LOST`; после подтверждённого delete
+невозможность доказать результат остаётся `TRANSITION_UNCONFIRMED`.
+
+Сервис и команда не записывают TelegramBotState, readiness timestamps, offset,
+connections, tokens или outbox jobs. Worker после рестарта самостоятельно проходит
+polling readiness и продолжает сохранённый offset; delivery по-прежнему не блокируется
+активным webhook. Public result содержит только `NO_CHANGE` или `TRANSITIONED`,
+ошибки — bounded safe code. URL webhook, bot id/username, token, raw response,
+description, request URL и cause не входят в result, error или terminal output.

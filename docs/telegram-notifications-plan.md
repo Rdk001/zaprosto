@@ -822,6 +822,38 @@ Poller работает в существующем отдельном worker-п
 
 Явный переход с webhook выполняется отдельной операторской командой через `deleteWebhook({ dropPendingUpdates: false })`, после чего заново проверяется `getWebhookInfo`. В MVP web endpoint и автоматическое переключение режимов не создаются.
 
+### 20.1. Операторский переход webhook → polling (06.6B)
+
+`npm run telegram:delete-webhook` работает только в интерактивном TTY, не принимает
+argv или pipe и читает token/username исключительно существующим runtime config parser.
+После предупреждения оператор дословно вводит `DELETE TELEGRAM WEBHOOK`. До этого
+подтверждения maintenance lock и Bot API не вызываются.
+
+После подтверждения команда делает fail-fast попытку exclusive maintenance lock
+`(526008, 66)`. Shared guard любого worker даёт `WORKER_ACTIVE` до создания Bot API.
+Под exclusive session последовательно выполняются:
+
+1. `getMe` с session signal;
+2. чтение сохранённой `TelegramBotState` и case-insensitive сверка configured,
+   фактического и сохранённого username вместе с точным bot id;
+3. `getWebhookInfo` с тем же signal;
+4. при непустом webhook — ровно один
+   `deleteWebhook({ dropPendingUpdates: false })`;
+5. обязательный повторный `getWebhookInfo`.
+
+Неинициализированная или несовпадающая identity закрывается безопасным отказом и не
+принимается автоматически. Пустой исходный URL даёт `NO_CHANGE` без delete. Только
+пустой URL после delete даёт `TRANSITIONED`. Подтверждённый delete с недоступным или
+всё ещё активным post-check даёт `TRANSITION_UNCONFIRMED`; автоматического второго
+delete нет. Потеря maintenance session прекращает дальнейшие действия.
+
+Команда не изменяет readiness, offset, connections, tokens и outbox jobs. Pending
+Telegram updates сохраняются; после рестарта polling worker сам проходит readiness и
+продолжает сохранённый offset. Active webhook не блокирует delivery. Результаты,
+исключения и terminal output содержат только success status или bounded safe code:
+webhook URL, bot id/username, token, raw response/description/request URL и cause
+никогда не возвращаются и не логируются.
+
 Telegram хранит updates не более 24 часов, поэтому простой poller дольше суток может дать невосстановимый gap. Метрика stale polling должна предупредить намного раньше; после восстановления пользователь создаёт новую ссылку и повторяет Start. Система не делает вид, что способна восстановить уже удалённый Telegram update.
 
 ## 21. Конфигурация и деградация

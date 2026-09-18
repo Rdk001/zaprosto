@@ -187,6 +187,18 @@ maintenance lock `(526008, 66)`. Каждый production worker до запус�
 `CANCELLED` с очищенными lease, заменяет identity и сбрасывает offset/readiness. Terminal
 история и ранее отключённые connections не переписываются.
 
+Явный переход с внешнего webhook на long polling выполняет отдельная TTY-only команда
+`npm run telegram:delete-webhook`. Она принимает Telegram configuration только из env,
+требует точное подтверждение `DELETE TELEGRAM WEBHOOK` и после него берёт тот же
+fail-fast exclusive maintenance lock. Под lock повторно доказываются configured,
+фактическая и сохранённая bot identity. Пустой webhook даёт `NO_CHANGE`; активный
+удаляется ровно одним `deleteWebhook({ dropPendingUpdates: false })`, после чего
+обязательный `getWebhookInfo` должен подтвердить пустой URL для `TRANSITIONED`.
+Неудачный или всё ещё активный post-check даёт `TRANSITION_UNCONFIRMED` без второго
+delete. Команда не изменяет singleton, offset, readiness, connections, tokens или jobs;
+после запуска worker сам проходит polling readiness и продолжает сохранённый offset.
+Активный webhook по-прежнему блокирует только polling, но не исходящую delivery.
+
 Если Telegram не настроен или не готов, web и бронирование продолжают работать, producer-ы не делают внешних вызовов, новые кнопки подключения скрыты, worker остаётся жив и выдаёт только безопасный диагностический код.
 
 ## Рассмотренные альтернативы

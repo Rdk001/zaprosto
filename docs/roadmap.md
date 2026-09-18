@@ -96,8 +96,16 @@ TTY-only команда проверяет нового бота через `get
 с `BOT_REPLACED`, отзывает unused tokens, terminal-cancel незавершённые jobs, заменяет
 identity и сбрасывает offset/readiness. Terminal history сохраняется.
 
-Фактическая оставшаяся граница этапа 06: cleanup/retention, согласованные health/metrics и операторский
-webhook-transition command, затем полный unit/PostgreSQL/E2E/security acceptance.
+**06.6B реализована.** TTY-only команда перехода с внешнего webhook на long polling
+после typed confirmation берёт fail-fast exclusive maintenance lock, доказывает
+configured/фактическую/сохранённую bot identity, сохраняет pending updates и выполняет
+ровно один `deleteWebhook({ dropPendingUpdates: false })` с обязательным
+`getWebhookInfo` post-check.
+`NO_CHANGE`, `TRANSITIONED` и bounded failure codes не раскрывают URL или Telegram
+identity; состояние БД и offset не изменяются.
+
+Фактическая оставшаяся граница этапа 06: cleanup/retention и согласованные
+health/metrics (06.6C+), затем полный unit/PostgreSQL/E2E/security acceptance.
 Эти части не скрыты внутри 06.5H; весь MVP и ADR-0014 ещё не объявлены принятыми.
 
 ## 07. Подготовка MVP к демонстрации

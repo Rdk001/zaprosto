@@ -31,7 +31,8 @@
     "demo:seed": "node --env-file-if-exists=.env --import tsx scripts/seed-demo.ts",
     "admin:create": "node --env-file-if-exists=.env --import tsx scripts/admin.ts create",
     "admin:reset": "node --env-file-if-exists=.env --import tsx scripts/admin.ts reset",
-    "telegram:replace-bot": "node --env-file-if-exists=.env --import tsx scripts/telegram-replace-bot.ts"
+    "telegram:replace-bot": "node --env-file-if-exists=.env --import tsx scripts/telegram-replace-bot.ts",
+    "telegram:delete-webhook": "node --env-file-if-exists=.env --import tsx scripts/telegram-delete-webhook.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",

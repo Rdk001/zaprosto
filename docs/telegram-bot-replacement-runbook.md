@@ -2,7 +2,8 @@
 
 Этот runbook относится только к замене на другую bot identity. Ротация token того же
 бота не требует массового отключения. Переход с webhook (`deleteWebhook`) остаётся
-отдельной задачей 06.6B.
+отдельной операторской командой и описан в
+[webhook-transition runbook](telegram-webhook-transition-runbook.md).
 
 ## Перед запуском
 

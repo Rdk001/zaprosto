@@ -62,6 +62,17 @@ export {
   TelegramWorkerRuntime,
   TelegramWorkerRuntimeError,
 } from "./worker-runtime";
+export {
+  runTelegramWebhookTransitionCommand,
+  telegramWebhookTransitionCommandSafeCode,
+  TELEGRAM_WEBHOOK_TRANSITION_CONFIRMATION,
+  TelegramWebhookTransitionCommandError,
+} from "./webhook-transition-command";
+export {
+  requireEnabledTelegramWebhookTransitionConfiguration,
+  TelegramWebhookTransitionError,
+  TelegramWebhookTransitionService,
+} from "./webhook-transition-service";
 export type {
   AppointmentTelegramDisconnectResult,
   AppointmentTelegramReadResult,
@@ -171,3 +182,11 @@ export type {
   TelegramWorkerRootLoop,
   TelegramWorkerRuntimeFactoryInput,
 } from "./worker-runtime";
+export type {
+  TelegramWebhookTransitionCommandCode,
+  TelegramWebhookTransitionCommandService,
+} from "./webhook-transition-command";
+export type {
+  TelegramWebhookTransitionResult,
+  TelegramWebhookTransitionSafeCode,
+} from "./webhook-transition-service";
