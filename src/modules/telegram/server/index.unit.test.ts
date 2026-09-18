@@ -40,6 +40,8 @@ describe("Telegram production entrypoint", () => {
       "TelegramDeliveryRateGateError",
       "TelegramDeliverySupervisor",
       "TelegramDeliverySupervisorError",
+      "TelegramHealthSnapshotError",
+      "TelegramHealthSnapshotRepository",
       "TelegramLinkRepository",
       "TelegramLinkRepositoryError",
       "TelegramLinkService",
@@ -71,6 +73,7 @@ describe("Telegram production entrypoint", () => {
       "runTelegramWorkerProcess",
       "telegramBotReplacementCommandSafeCode",
       "telegramWebhookTransitionCommandSafeCode",
+      "toTelegramHealthConfiguration",
       "verifyTelegramBotReadiness",
       "verifyTelegramDeliveryReadiness",
     ]);

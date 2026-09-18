@@ -112,9 +112,15 @@ connections. Ошибка даёт только `TELEGRAM_CLEANUP_FAILED` и н�
 polling/delivery. Добавлены cleanup-индексы и PostgreSQL проверки точных границ,
 FK-порядка, повторного/конкурентного запуска и сохранения активных данных.
 
-Фактическая оставшаяся граница этапа 06: согласованные health/metrics, затем полный
-unit/PostgreSQL/E2E/security acceptance. Эти части не скрыты внутри 06.6C; весь MVP
-и ADR-0014 ещё не объявлены принятыми.
+**06.6D реализована.** Добавлен защищённый read-only
+`/api/admin/telegram/health`: один согласованный PostgreSQL snapshot с polling и
+delivery readiness, безопасным global code, группами очереди, stale/expired signals,
+newest DEAD и честными агрегатами сохранённых delivery данных. Публичный `/api/health`
+не изменён; Telegram API, внешняя telemetry, UI и новая migration не добавлялись.
+Добавлен операторский observability runbook без печати token/raw response.
+
+Фактическая оставшаяся граница этапа 06: полный unit/PostgreSQL/E2E/security acceptance.
+Он не скрыт внутри 06.6D; весь MVP и ADR-0014 ещё не объявлены принятыми.
 
 ## 07. Подготовка MVP к демонстрации
 

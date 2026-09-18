@@ -849,3 +849,39 @@ worker. Он запускает batch 100 сразу после получени
 DB-транзакцию и не начинает новую. Storage/SQL/driver error отбрасывается:
 наружу и logger выходит только `TELEGRAM_CLEANUP_FAILED`. Ошибка cleanup не
 останавливает polling или delivery. Cleanup не создаёт Bot API и не выполняет HTTP.
+
+## Защищённый health snapshot и агрегированные metrics (06.6D)
+
+`GET /api/admin/telegram/health` доступен только существующей действующей admin
+session. Анонимный запрос получает нейтральный `UNAUTHORIZED` без counts; ошибка auth
+остаётся `UNAVAILABLE`, ошибка snapshot — `TELEGRAM_HEALTH_STORAGE_FAILURE`. Ответ
+имеет `private, no-store`. Публичный `/api/health` не изменён и остаётся дешёвым
+liveness без БД/Telegram dependency.
+
+`TelegramHealthSnapshotRepository` выполняет read-only `RepeatableRead` transaction с
+четырёхсекундным statement timeout. Все данные snapshot читаются одним SQL statement
+с одним `clock_timestamp()`: singleton bot state, PENDING/PROCESSING/DEAD по каждому
+notification type, oldest due PENDING, expired PROCESSING leases, skipped client
+reminders, newest DEAD и доступные delivery aggregates. Payload JSON не читается,
+N+1 и Bot API отсутствуют; используются существующие status/due/lease индексы,
+поэтому новая migration не нужна.
+
+Polling age и verification age считаются в bounded milliseconds; будущие/невалидные
+timestamps закрываются как `NOT_READY`, а точная граница 120000 мс ещё `READY`.
+Oldest due age строго больше 300000 мс даёт degraded queue signal; точная граница ещё
+не stale. Любой expired lease даёт `DEGRADED`. `newestDeadAt` позволяет оператору
+сравнить два snapshot без process-local state, но сохранённый исторический DEAD не
+меняет health навсегда.
+
+Delivery readiness означает только eligibility из безопасной runtime configuration и
+сохранённой identity; отдельного delivery heartbeat схема не хранит. `SENT` — число
+сохранённых sent rows, `additionalAttemptClaims` — сумма `max(attempts - 1, 0)`, а
+`jobsWithLastRateLimitCode` — строки с текущим last code `TELEGRAM_RATE_LIMIT`.
+`confirmedSendLatencyMs` точно означает `scheduledAt → sentAt` для валидных SENT rows,
+не HTTP latency; без samples average/maximum равны `null`. Все bigint/counts проверяются
+и преобразуются в safe JSON numbers до boundary.
+
+DTO не содержит token/token hash, chat/user id, bot identity/username, webhook URL,
+appointment id, payload, имя/телефон, SQL/driver cause, Telegram description или raw
+error. Операторская интерпретация и безопасный порядок проверки описаны в
+[observability runbook](telegram-observability-runbook.md).

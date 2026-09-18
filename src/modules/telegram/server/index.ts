@@ -46,6 +46,11 @@ export {
 export { AppointmentTelegramService } from "./appointment-connection-service";
 export { TelegramBotStateError, TelegramBotStateRepository } from "./bot-state-repository";
 export { createTelegramFetchTransport } from "./fetch-transport";
+export {
+  TelegramHealthSnapshotError,
+  TelegramHealthSnapshotRepository,
+  toTelegramHealthConfiguration,
+} from "./health-snapshot";
 export { TelegramDeliveryPreflight, TelegramDeliveryPreflightError } from "./delivery-preflight";
 export { TelegramLinkRepository, TelegramLinkRepositoryError } from "./link-repository";
 export { TelegramLinkService, TelegramLinkServiceError } from "./link-service";
@@ -154,6 +159,12 @@ export type {
   TelegramMaintenanceLockSession,
   TelegramMaintenanceLockSource,
 } from "./maintenance-lock";
+export type {
+  TelegramHealthConfiguration,
+  TelegramHealthReasonCode,
+  TelegramHealthSnapshot,
+  TelegramHealthStatusCounts,
+} from "./health-snapshot";
 export type {
   TelegramAdminLinkRepositoryResult,
   TelegramAppointmentLinkRepositoryResult,

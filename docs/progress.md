@@ -2154,3 +2154,52 @@ unit/PostgreSQL/E2E/security acceptance этапа 06. ADR-0014 остаётся
 06.6C не добавляет health/metrics endpoint и не объявляет этап 06 или ADR-0014
 принятыми. Согласованные health/metrics и полный unit/PostgreSQL/E2E/security
 acceptance остаются следующими отдельными задачами.
+
+## Этап 06.6D — безопасная наблюдаемость Telegram (2026-09-18)
+
+Исходный commit: `8c193aa88b929fc43b1642467fb18c509aa975be`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- Добавлен защищённый read-only `GET /api/admin/telegram/health`. Действующая admin
+  session получает строгий bounded snapshot; анонимный запрос — только нейтральный
+  `UNAUTHORIZED`. Auth/storage failures не раскрывают cause. Ответ `private, no-store`.
+- Один read-only `RepeatableRead` snapshot использует единый PostgreSQL timestamp,
+  statement timeout, существующие индексы и агрегаты без N+1/payload JSON scans.
+  Новая migration не потребовалась.
+- DTO содержит polling readiness и age, delivery eligibility, safe global error,
+  PENDING/PROCESSING/DEAD по всем восьми типам, oldest due age, expired leases,
+  skipped reminders и newest DEAD timestamp. Точные 2/5-минутные границы не stale;
+  expired lease и превышение порогов дают `DEGRADED`.
+- Сохранённые данные честно дают SENT rows, дополнительные claims,
+  current-last-rate-limit rows и queue-to-confirmed-send latency
+  `scheduledAt → sentAt`. HTTP latency и утраченная историческая telemetry не
+  выдумываются; отсутствие samples даёт `null`.
+- Все bigint/counts преобразуются только после safe-range проверки. Token/hash,
+  chat/user id, bot identity/username, webhook URL, appointment id, payload,
+  имя/телефон, raw SQL/error, Telegram description/cause отсутствуют в DTO и logs.
+- Публичный `/api/health`, polling/delivery/retry/rate-limit/cleanup, producers, UI и
+  бизнес-логика не менялись. Telegram API и реальная сеть не вызываются.
+- Добавлен [операторский runbook](telegram-observability-runbook.md) с безопасным
+  порядком проверки env presence, PostgreSQL, `getMe`/identity и `getWebhookInfo`.
+
+### Целевые проверки
+
+- Новые/изменённые unit/API tests: **13/13**. Проверены anonymous/admin,
+  неизменный дешёвый liveness, Node-safe export, 2/5-minute boundaries,
+  disabled/incomplete/invalid/uninitialized/stale/degraded/healthy, zero groups,
+  newest DEAD, bounded failures и JSON без BigInt.
+- Новый PostgreSQL integration suite: **1/1** через isolated runner. Проверены реальные
+  группировки, oldest due, expired lease, skipped reminder, SENT/retry/rate-limit,
+  точная stored latency, newest DEAD, PII/secret canaries и запрет fetch/Telegram.
+- После runner подтверждены **0** временных `zaprosto_test_*` БД и **0** advisory locks.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck` и
+  production `npm run build` (Next.js + worker).
+
+### Границы и продолжение
+
+06.6D не добавляет внешнюю telemetry, UI, schema/migration или operator mutation.
+Полный unit/PostgreSQL/E2E/security acceptance этапа 06 остаётся следующей отдельной
+задачей; ADR-0014 остаётся `Proposed`.

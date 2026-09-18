@@ -963,6 +963,15 @@ terminal-статуса.
 
 Первичные сигналы: polling старше двух минут, due queue старше пяти минут, expired lease или новый DEAD. Runbook проверяет наличие обеих переменных, `getMe`, совпадение username/identity, `getWebhookInfo`, доступность PostgreSQL и безопасные коды outbox. Он никогда не предлагает печатать token или полный Telegram response.
 
+Реализация 06.6D предоставляет один защищённый admin snapshot на едином PostgreSQL
+времени. Точные границы 2 и 5 минут считаются свежими; stale начинается со следующей
+миллисекунды. Новый DEAD обнаруживается сравнением `newestDeadAt` и не является
+вечным degraded-флагом. Из текущей retained schema честно публикуются SENT rows,
+дополнительные сохранённые claims, строки с последним rate-limit code и latency
+`scheduledAt → sentAt`; исторический event counter и Telegram HTTP latency не
+выдумываются. Публичный liveness не зависит от БД/Telegram, подробности доступны только
+admin session. Внешняя telemetry, Bot API calls и новая migration не добавлены.
+
 ## 23. Тестовая стратегия
 
 Ни один тест не использует реальный bot token и не обращается к `api.telegram.org`.
