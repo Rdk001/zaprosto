@@ -1932,3 +1932,56 @@ production composition dispatcher/attempt/rate gate/API/repository, объеди
 polling и delivery в общем process shutdown и провести финальную runtime-проверку.
 Readiness/circuit breaker, изменения long polling и реальные Telegram-запросы в
 06.5G не добавлены.
+
+## Этап 06.5H — production composition Telegram delivery и общий shutdown (2026-09-18)
+
+Исходный commit: `d37bf83adf535e110bd663efb5168f3c6e6c65bf`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit и push.
+
+### Реализовано
+
+- Добавлена отдельная delivery readiness: disabled/incomplete/invalid не создают API;
+  enabled делает один `getMe`, проверяет configured username и сохранённую identity,
+  а первую identity фиксирует существующим атомарным state contract.
+  `getWebhookInfo`/auto-delete webhook отсутствуют. Сохранённый `WEBHOOK_ACTIVE`
+  не блокирует delivery и не очищается ею; другая bot identity запрещает delivery.
+- Добавлен `TelegramDeliverySupervisor` с периодическим bounded recheck, одной
+  readiness-проверкой и максимум одной active lifecycle-session. Потеря readiness и
+  token rotation останавливают и полностью settle прежнюю session до следующей.
+  Run/stop идемпотентны; stop abort-ит readiness/sleep/delivery.
+- Production composition вынесена в Node-safe `worker-runtime.ts`.
+  Один Prisma client и один `pg.Pool(max=5)` обслуживают polling leader и четыре
+  bounded dispatcher attempts. Graph использует существующие fetch transport, API,
+  preflight, PostgreSQL rate gate, attempt, dispatcher и delivery orchestrator.
+- Polling и delivery запускаются как независимые корневые loops. Delivery работает
+  без polling leadership. Неожиданный выход любого loop вызывает coordinated shutdown;
+  после settlement обоих loops `pool.end` и `$disconnect` выполняются по одному разу.
+  Повторные signals/shutdown не дублируют cleanup, signal handlers снимаются.
+- `src/worker.ts` оставлен тонким ESM entrypoint. Fatal path ставит `exitCode=1`;
+  logger принимает только закрытые diagnostic codes и не получает raw errors или
+  Telegram/DB данные. Миграции, зависимости, producers, retry/backoff и rate policy
+  не изменялись.
+
+### Целевые проверки
+
+- Целевой PostgreSQL runtime smoke: **2/2** в автоматически созданной и удалённой
+  `zaprosto_test_*` базе. VERIFIED fake identity прошла claim → preflight → реальный
+  PostgreSQL rate gate → fake send → finish/SENT без polling leader; stored identity
+  mismatch оставил due job PENDING без claim. Shutdown оставил 0 PROCESSING jobs и
+  0 advisory locks. Реальных Telegram credentials/network не было.
+- Новые readiness/supervisor/runtime и entrypoint unit-наборы: **22/22**; вместе со
+  смежными polling/delivery-orchestrator/worker-pool тестами: **57/57**.
+- Успешно прошли `npm run format:check`, `npm run lint`,
+  `npm run typecheck`, production `npm run build` (Next.js + ESM worker),
+  `docker compose config` и `git diff --check`.
+- Полные `npm test`, `test:postgres` и Playwright E2E намеренно не запускались:
+  по условиям 06.5H использованы только изменённые unit-наборы и целевой PostgreSQL
+  runtime smoke; полный аудит остаётся отдельным финальным этапом.
+
+### Границы и продолжение
+
+06.5H не реализует operator replacement/`BOT_REPLACED`, cleanup/retention,
+health/metrics, webhook-transition command или полный acceptance. Следующий отдельный
+этап должен закрыть эти эксплуатационные границы и провести полный
+unit/PostgreSQL/E2E/security аудит перед изменением статуса ADR-0014 или объявлением MVP.

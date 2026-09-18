@@ -1,9 +1,8 @@
 # Telegram runtime primitives и Bot API adapter
 
-Документ описывает изолированное техническое ядро 06.2B/06.2C: runtime primitives,
-Bot API adapter и PostgreSQL repository жизненного цикла outbox. Repository работает только
-с outbox и явно переданным Prisma client. Polling, dispatcher, бизнес-producers, выпуск
-ссылок, подключения, worker integration и UI остаются следующими этапами.
+Документ описывает Telegram runtime этапа 06: Bot API adapter, readiness, polling,
+PostgreSQL outbox и production delivery composition. Узкие repository и service-модули
+по-прежнему получают зависимости явно и не импортируют Next-only runtime.
 
 ## Границы модулей
 
@@ -703,3 +702,42 @@ Lifecycle пока не подключён к `src/worker.ts`. Этап 06.5H д
 dependencies, совместный process shutdown polling и delivery и выполнить финальную
 runtime-проверку. Реальный Telegram API, новый readiness/circuit breaker, миграции и
 изменения long polling в 06.5G не добавлены.
+
+## Production composition и delivery readiness (06.5H)
+
+`verifyTelegramDeliveryReadiness` является отдельной от polling проверкой. Для
+`DISABLED`, `INCOMPLETE` и `INVALID` она не создаёт и не вызывает Bot API.
+Для `ENABLED` выполняется ровно один `getMe`: configured username и сохранённые
+`botUserId/botUsername` должны совпасть без учёта регистра. Первая identity
+фиксируется существующим атомарным `recordVerifiedIdentity`. Для уже сохранённой
+совпадающей identity delivery не переписывает общий polling diagnostic.
+`getWebhookInfo` и `deleteWebhook` не вызываются: сохранённый `WEBHOOK_ACTIVE`
+останавливает polling, но не исходящую delivery после нового успешного `getMe`.
+Другая фактическая bot identity даёт `BOT_IDENTITY_MISMATCH` и запрещает claim.
+
+`TelegramDeliverySupervisor` последовательно выполняет readiness с bounded recheck,
+держит не более одной delivery-session и не допускает overlap при её смене. Lifecycle
+создаётся только после `VERIFIED`. Потеря readiness abort-ит и полностью останавливает
+orchestrator до следующей проверки; уже начатый dispatcher batch проходит settlement.
+Ротация token того же bot id проходит новый `getMe`, останавливает старую session и
+только затем создаёт новую. Неожиданный выход session считается корневой runtime-ошибкой.
+
+`worker-runtime.ts` собирает production graph:
+
+`fetch transport → Bot API → delivery identity verifier → preflight → PostgreSQL
+rate gate → attempt → dispatcher → delivery orchestrator → supervisor`.
+
+Параллельно сохраняется прежний
+`Bot API → polling readiness (getMe + getWebhookInfo) → polling leader/store →
+TelegramPollingOrchestrator`. Polling leadership не требуется для delivery.
+
+Используются один Prisma client и один явный `pg.Pool(max=5)`: один session slot
+зарезервирован фактической потребностью polling leader, четыре соответствуют
+константе dispatcher concurrency. Concurrency не настраивается через env и остаётся
+ниже policy batch limit 20. HTTP не переносится в SQL-транзакцию и не обходит rate gate.
+
+Общий runtime запускает оба корневых loop. Завершение любого из них вне shutdown
+останавливает второй, затем ровно один раз выполняет `pool.end()` и
+`database.$disconnect()`. SIGINT/SIGTERM используют тот же идемпотентный shutdown;
+handlers снимаются в `finally`. Fatal path выставляет `exitCode=1` и логирует только
+allowlist code без raw error. `src/worker.ts` остаётся тонким ESM entrypoint.

@@ -81,6 +81,19 @@ lease recovery, ровно один dispatcher batch на tick, abortable pause/
 не подключён к `src/worker.ts`; production composition, общий process shutdown и
 финальная runtime-проверка выделены в 06.5H.
 
+**06.5H реализована.** Добавлена отдельная delivery readiness только через `getMe`
+и сохранённую bot identity без `getWebhookInfo`: активный webhook продолжает
+останавливать polling, но не исходящую delivery. Delivery supervisor периодически
+перепроверяет identity, запускает dispatcher lifecycle только в `VERIFIED`, а при
+потере readiness останавливает его с settlement начатых attempts. Production worker
+собирает polling и delivery на одном Prisma client и bounded `pg.Pool(max=5)`,
+использует concurrency 4 и общий идемпотентный graceful shutdown.
+
+Фактическая оставшаяся граница этапа 06: отдельная операторская замена bot identity
+с `BOT_REPLACED`, cleanup/retention, согласованные health/metrics и операторский
+webhook-transition command, затем полный unit/PostgreSQL/E2E/security acceptance.
+Эти части не скрыты внутри 06.5H; весь MVP и ADR-0014 ещё не объявлены принятыми.
+
 ## 07. Подготовка MVP к демонстрации
 
 Проверить критические сценарии на мобильных экранах, подготовить только вымышленные демонстрационные персональные данные, инструкции отдельного развёртывания для заказчика и обновить документацию.

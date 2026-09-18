@@ -1,5 +1,11 @@
 export { createTelegramBotApi, TelegramBotApiError } from "./bot-api";
 export { TelegramDeliveryAttempt } from "./delivery-attempt";
+export { verifyTelegramDeliveryReadiness } from "./delivery-readiness-service";
+export {
+  TELEGRAM_DELIVERY_READINESS_RECHECK_MS,
+  TelegramDeliverySupervisor,
+  TelegramDeliverySupervisorError,
+} from "./delivery-supervisor";
 export {
   TELEGRAM_DELIVERY_ORCHESTRATOR_DEFAULTS,
   TelegramDeliveryOrchestrator,
@@ -32,6 +38,14 @@ export { parseTelegramRuntimeConfiguration } from "./runtime-config";
 export { parseTelegramStartCommand } from "./start-command-parser";
 export { processTelegramStart, TelegramStartProcessorError } from "./start-processor";
 export { registerTelegramWorkerPoolErrorHandler } from "./worker-pool";
+export {
+  createTelegramWorkerRuntime,
+  runTelegramWorkerProcess,
+  TELEGRAM_WORKER_DELIVERY_CONCURRENCY,
+  TELEGRAM_WORKER_POOL_MAX,
+  TelegramWorkerRuntime,
+  TelegramWorkerRuntimeError,
+} from "./worker-runtime";
 export type {
   AppointmentTelegramDisconnectResult,
   AppointmentTelegramReadResult,
@@ -59,6 +73,15 @@ export type {
   TelegramDeliveryAttemptInput,
   TelegramDeliveryAttemptResult,
 } from "./delivery-attempt";
+export type {
+  TelegramDeliveryVerificationReason,
+  TelegramDeliveryVerificationResult,
+} from "./delivery-readiness-service";
+export type {
+  TelegramDeliveryLifecycle,
+  TelegramDeliverySupervisorDependencies,
+  TelegramDeliverySupervisorDiagnosticCode,
+} from "./delivery-supervisor";
 export type {
   TelegramDeliveryDiagnosticCode,
   TelegramDeliveryLogger,
@@ -110,3 +133,9 @@ export type {
   TelegramRuntimeConfigErrorCode,
   TelegramRuntimeConfiguration,
 } from "./runtime-config";
+export type {
+  TelegramWorkerDiagnosticCode,
+  TelegramWorkerLogger,
+  TelegramWorkerRootLoop,
+  TelegramWorkerRuntimeFactoryInput,
+} from "./worker-runtime";
