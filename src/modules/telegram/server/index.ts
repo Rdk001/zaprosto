@@ -1,4 +1,15 @@
 export { createTelegramBotApi, TelegramBotApiError } from "./bot-api";
+export {
+  runTelegramBotReplacementCommand,
+  telegramBotReplacementCommandSafeCode,
+  TELEGRAM_REPLACEMENT_CONFIRMATION,
+  TelegramBotReplacementCommandError,
+} from "./bot-replacement-command";
+export {
+  requireEnabledTelegramReplacementConfiguration,
+  TelegramBotReplacementError,
+  TelegramBotReplacementService,
+} from "./bot-replacement-service";
 export { TelegramDeliveryAttempt } from "./delivery-attempt";
 export { verifyTelegramDeliveryReadiness } from "./delivery-readiness-service";
 export {
@@ -13,6 +24,11 @@ export {
 } from "./delivery-orchestrator";
 export { TelegramDeliveryRateGate, TelegramDeliveryRateGateError } from "./delivery-rate-gate";
 export { TelegramOutboxDispatcher, TelegramOutboxDispatcherError } from "./outbox-dispatcher";
+export {
+  PostgresTelegramMaintenanceLockSource,
+  TELEGRAM_MAINTENANCE_ADVISORY_LOCK_KEY,
+  TelegramMaintenanceLockError,
+} from "./maintenance-lock";
 export {
   AppointmentTelegramRepository,
   AppointmentTelegramRepositoryError,
@@ -64,6 +80,16 @@ export type {
   TelegramUpdate,
   TelegramWebhookInfo,
 } from "./bot-api";
+export type {
+  TelegramBotReplacementCommandCode,
+  TelegramBotReplacementCommandResult,
+  TelegramBotReplacementCommandService,
+} from "./bot-replacement-command";
+export type {
+  TelegramBotReplacementPreflightResult,
+  TelegramBotReplacementSafeCode,
+  TelegramBotReplacementSummary,
+} from "./bot-replacement-service";
 export type { TelegramBotStateSnapshot, TelegramBotStateStore } from "./bot-state-repository";
 export type {
   TelegramDeliveryPreflightInput,
@@ -101,6 +127,12 @@ export type {
   TelegramOutboxDispatcherInput,
   TelegramOutboxDispatcherSummary,
 } from "./outbox-dispatcher";
+export type {
+  TelegramMaintenanceAdvisoryLockKey,
+  TelegramMaintenanceLockMode,
+  TelegramMaintenanceLockSession,
+  TelegramMaintenanceLockSource,
+} from "./maintenance-lock";
 export type {
   TelegramAdminLinkRepositoryResult,
   TelegramAppointmentLinkRepositoryResult,

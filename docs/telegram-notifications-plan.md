@@ -849,7 +849,7 @@ Producer продолжает транзакционно сохранять ад
 
 Новый token того же бота безопасен: `getMe.id` совпадает, offset и connections сохраняются. Смена username того же bot id требует одновременно обновить `TELEGRAM_BOT_USERNAME`, повторно пройти readiness и отозвать неиспользованные deep-link tokens; активные connections остаются.
 
-Другой `getMe.id` никогда не принимается автоматически. Будущая явная операторская команда должна при остановленном poller проверить нового бота и одной DB-транзакцией:
+Другой `getMe.id` никогда не принимается автоматически. Явная операторская команда должна при гарантированно остановленных worker проверить нового бота и одной DB-транзакцией:
 
 1. отключить все прежние connections с `BOT_REPLACED`;
 2. отозвать link tokens и инвалидировать неотправленные jobs старой identity;
@@ -857,6 +857,15 @@ Producer продолжает транзакционно сохранять ад
 4. сбросить `nextUpdateId` в `0` и readiness timestamps.
 
 После этого клиентам и администраторам нужно добровольно подключиться к новому боту заново. Ручное исправление singleton без этого протокола запрещено.
+
+Гарантия остановки обеспечивается отдельным session advisory lock `(526008, 66)`:
+production worker держит shared lock одной выделенной session до полного settlement обоих
+loops, оператор делает fail-fast `pg_try_advisory_lock` в exclusive mode. Несколько worker
+совместно держат shared lock; любой из них блокирует replacement. Потеря worker session
+инициирует coordinated shutdown. Unlock проверяется, повреждённая session уничтожается,
+а exclusive lock всегда освобождается в `finally`. Namespace отделён от polling `(526008,
+61)` и delivery rate-gate keys. Worker pool имеет шесть слотов: maintenance, polling leader
+и четыре delivery attempts.
 
 ## 22. Безопасность, хранение и эксплуатация
 

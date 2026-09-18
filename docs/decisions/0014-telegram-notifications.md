@@ -173,6 +173,20 @@ Limit polling, HTTP timeouts, batch size, lease, retry и reminder grace ост�
 
 Ротация token того же `getMe.id` сохраняет offset и connections. Другая bot identity останавливает подсистему до явной операторской замены: прежние связи отключаются, их jobs и токены инвалидируются, offset сбрасывается, после чего пользователи подключаются заново.
 
+Безопасная замена другой bot identity использует отдельный session-level PostgreSQL
+maintenance lock `(526008, 66)`. Каждый production worker до запуска polling и delivery
+удерживает shared lock на выделенной session; несколько worker совместимы. Операторская
+команда после проверки `getMe` и явного TTY-подтверждения пытается взять exclusive lock
+на том же ключе и немедленно отказывает с `WORKER_ACTIVE`, если жив хотя бы один worker.
+Потеря maintenance session останавливает оба корневых worker loop. SQL-транзакция не
+заменяет этот межпроцессный session lock.
+
+Под exclusive lock одна транзакция блокирует singleton, повторно сверяет прежнюю identity,
+отключает только активные connections с `BOT_REPLACED`, отзывает неиспользованные tokens,
+переводит все `PENDING`/`PROCESSING` jobs, включая `DIRECT_CHAT`, в terminal
+`CANCELLED` с очищенными lease, заменяет identity и сбрасывает offset/readiness. Terminal
+история и ранее отключённые connections не переписываются.
+
 Если Telegram не настроен или не готов, web и бронирование продолжают работать, producer-ы не делают внешних вызовов, новые кнопки подключения скрыты, worker остаётся жив и выдаёт только безопасный диагностический код.
 
 ## Рассмотренные альтернативы

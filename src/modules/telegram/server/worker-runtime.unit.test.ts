@@ -41,23 +41,55 @@ function setup() {
   const pool = { end: vi.fn(async () => order.push("pool:end")) };
   const database = { $disconnect: vi.fn(async () => order.push("database:disconnect")) };
   const unregister = vi.fn(() => order.push("pool:unregister"));
+  const controller = new AbortController();
+  const maintenanceSession = {
+    mode: "WORKER_SHARED" as const,
+    signal: controller.signal,
+    release: vi.fn(async () => {
+      order.push("maintenance:release");
+    }),
+  };
+  const maintenance = { acquireWorker: vi.fn(async () => maintenanceSession) };
   const runtime = new TelegramWorkerRuntime({
     polling,
     delivery,
+    maintenance,
     pool: pool as never,
     database: database as never,
     unregisterPoolErrorHandler: unregister,
   });
-  return { runtime, polling, delivery, pool, database, unregister, order };
+  return {
+    runtime,
+    polling,
+    delivery,
+    maintenance,
+    maintenanceSession,
+    controller,
+    pool,
+    database,
+    unregister,
+    order,
+  };
 }
 
 describe("TelegramWorkerRuntime", () => {
   it("starts polling and delivery together and cleans resources after both stop", async () => {
-    const { runtime, polling, delivery, pool, database, unregister, order } = setup();
+    const {
+      runtime,
+      polling,
+      delivery,
+      maintenance,
+      maintenanceSession,
+      pool,
+      database,
+      unregister,
+      order,
+    } = setup();
     const running = runtime.run();
     await vi.waitFor(() => {
       expect(polling.run).toHaveBeenCalledOnce();
       expect(delivery.run).toHaveBeenCalledOnce();
+      expect(maintenance.acquireWorker).toHaveBeenCalledOnce();
     });
 
     await Promise.all([runtime.stop(), runtime.stop(), running]);
@@ -66,6 +98,9 @@ describe("TelegramWorkerRuntime", () => {
     expect(pool.end).toHaveBeenCalledOnce();
     expect(database.$disconnect).toHaveBeenCalledOnce();
     expect(unregister).toHaveBeenCalledOnce();
+    expect(maintenanceSession.release).toHaveBeenCalledOnce();
+    expect(order.indexOf("maintenance:release")).toBeGreaterThan(order.indexOf("delivery:stop"));
+    expect(order.indexOf("pool:end")).toBeGreaterThan(order.indexOf("maintenance:release"));
     expect(order.indexOf("pool:end")).toBeGreaterThan(order.indexOf("polling:stop"));
     expect(order.indexOf("database:disconnect")).toBeGreaterThan(order.indexOf("delivery:stop"));
   });
@@ -108,18 +143,51 @@ describe("TelegramWorkerRuntime", () => {
 
   it("uses a pool slot for polling plus bounded delivery concurrency", () => {
     expect(TELEGRAM_WORKER_DELIVERY_CONCURRENCY).toBe(4);
-    expect(TELEGRAM_WORKER_POOL_MAX).toBe(TELEGRAM_WORKER_DELIVERY_CONCURRENCY + 1);
+    expect(TELEGRAM_WORKER_POOL_MAX).toBe(TELEGRAM_WORKER_DELIVERY_CONCURRENCY + 2);
   });
 
-  it("builds and stops the disabled production graph without API or database work", async () => {
+  it("builds and stops the disabled production graph before run", async () => {
     const runtime = createTelegramWorkerRuntime({
       databaseUrl: "postgresql://unused:unused@127.0.0.1:1/unused",
       environment: {},
       logger: { log: vi.fn() },
     });
-    const running = runtime.run();
     await runtime.stop();
+  });
+
+  it("does not start either root loop until the shared maintenance lock is held", async () => {
+    const { polling, delivery, maintenanceSession } = setup();
+    const acquired = deferred<typeof maintenanceSession>();
+    const acquireWorker = vi.fn(() => acquired.promise);
+    const waiting = new TelegramWorkerRuntime({
+      polling,
+      delivery,
+      maintenance: { acquireWorker },
+      pool: { end: vi.fn(async () => undefined) } as never,
+      database: { $disconnect: vi.fn(async () => undefined) } as never,
+      unregisterPoolErrorHandler: vi.fn(),
+    });
+
+    const running = waiting.run();
+    await vi.waitFor(() => expect(acquireWorker).toHaveBeenCalledOnce());
+    expect(polling.run).not.toHaveBeenCalled();
+    expect(delivery.run).not.toHaveBeenCalled();
+    acquired.resolve(maintenanceSession);
+    await vi.waitFor(() => expect(polling.run).toHaveBeenCalledOnce());
+    await waiting.stop();
     await running;
+  });
+
+  it("turns maintenance session loss into coordinated root shutdown", async () => {
+    const { runtime, polling, delivery, controller, maintenanceSession } = setup();
+    const running = runtime.run();
+    await vi.waitFor(() => expect(delivery.run).toHaveBeenCalledOnce());
+
+    controller.abort(new Error("secret driver cause"));
+    await expect(running).rejects.toMatchObject({ code: "WORKER_MAINTENANCE_GUARD_LOST" });
+    expect(polling.stop).toHaveBeenCalledOnce();
+    expect(delivery.stop).toHaveBeenCalledOnce();
+    expect(maintenanceSession.release).toHaveBeenCalledOnce();
   });
 
   it("reports fatal with safe codes only when a root loop exits unexpectedly", async () => {
@@ -130,6 +198,13 @@ describe("TelegramWorkerRuntime", () => {
     const runtime = new TelegramWorkerRuntime({
       polling,
       delivery: rootLoop(order, "delivery"),
+      maintenance: {
+        acquireWorker: vi.fn(async () => ({
+          mode: "WORKER_SHARED" as const,
+          signal: new AbortController().signal,
+          release: vi.fn(async () => undefined),
+        })),
+      },
       pool: { end: vi.fn(async () => undefined) } as never,
       database: { $disconnect: vi.fn(async () => undefined) } as never,
       unregisterPoolErrorHandler: vi.fn(),

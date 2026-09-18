@@ -731,8 +731,8 @@ rate gate → attempt → dispatcher → delivery orchestrator → supervisor`.
 `Bot API → polling readiness (getMe + getWebhookInfo) → polling leader/store →
 TelegramPollingOrchestrator`. Polling leadership не требуется для delivery.
 
-Используются один Prisma client и один явный `pg.Pool(max=5)`: один session slot
-зарезервирован фактической потребностью polling leader, четыре соответствуют
+Используются один Prisma client и один явный `pg.Pool(max=6)`: один session slot
+удерживает maintenance guard, один зарезервирован polling leader, четыре соответствуют
 константе dispatcher concurrency. Concurrency не настраивается через env и остаётся
 ниже policy batch limit 20. HTTP не переносится в SQL-транзакцию и не обходит rate gate.
 
@@ -741,3 +741,39 @@ TelegramPollingOrchestrator`. Polling leadership не требуется для 
 `database.$disconnect()`. SIGINT/SIGTERM используют тот же идемпотентный shutdown;
 handlers снимаются в `finally`. Fatal path выставляет `exitCode=1` и логирует только
 allowlist code без raw error. `src/worker.ts` остаётся тонким ESM entrypoint.
+
+## Maintenance guard и операторская замена bot identity (06.6A)
+
+До запуска polling и delivery production runtime берёт shared session advisory lock
+`(526008, 66)` на отдельном `pg.PoolClient` и удерживает его до settlement обоих loops.
+Несколько worker могут держать shared lock одновременно. Событие `error`/`end` этой
+session abort-ит guard, инициирует coordinated shutdown и уничтожает connection.
+Штатный release использует `pg_advisory_unlock_shared`, проверяет boolean и возвращает
+здоровую session в pool ровно один раз; `false` или ошибка уничтожают её. Pool/database
+закрываются только после остановки loops и release guard.
+
+Операторская команда `npm run telegram:replace-bot` работает только в интерактивном
+TTY и не принимает аргументы. `TELEGRAM_BOT_TOKEN` и `TELEGRAM_BOT_USERNAME` читаются
+только из env существующим parser. До предупреждения и мутации выполняется `getMe`:
+username обязан совпасть с настроенным без учёта регистра, raw response/error и token не выводятся.
+Неинициализированный singleton не считается replacement. Совпадающая identity даёт
+`NO_CHANGE`. Для другой identity оператор дословно вводит `REPLACE TELEGRAM BOT`.
+
+После подтверждения команда вызывает fail-fast exclusive
+`pg_try_advisory_lock(526008, 66)`. Любой живой worker даёт safe code `WORKER_ACTIVE`
+без мутации. Exclusive session освобождается в `finally` с той же проверкой unlock.
+Под lock одна `ReadCommitted`-транзакция:
+
+1. блокирует `TelegramBotState FOR UPDATE` и повторно сверяет прежние id/username;
+2. читает `clock_timestamp()`;
+3. отключает только активные client/admin connections с `BOT_REPLACED`;
+4. отзывает все unused/unrevoked link tokens;
+5. переводит все `PENDING`/`PROCESSING` outbox jobs, включая `DIRECT_CHAT`, в
+   `CANCELLED`, ставит `BOT_REPLACED`/`finishedAt` и очищает lease;
+6. заменяет identity, сбрасывает `nextUpdateId=0`, `lastVerifiedAt`, `lastPollAt` и
+   `lastErrorCode`.
+
+Ранее отключённые connections и terminal `SENT/DEAD/CANCELLED/SKIPPED` rows не
+переписываются. Конфликт singleton или любая ошибка откатывают всю транзакцию. Наружу
+выходят только safe status/code и bounded counts; новая identity и Telegram IDs не
+входят в result/logs.

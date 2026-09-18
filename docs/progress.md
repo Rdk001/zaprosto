@@ -1985,3 +1985,61 @@ commit и push.
 health/metrics, webhook-transition command или полный acceptance. Следующий отдельный
 этап должен закрыть эти эксплуатационные границы и провести полный
 unit/PostgreSQL/E2E/security аудит перед изменением статуса ADR-0014 или объявлением MVP.
+
+## Этап 06.6A — безопасная операторская замена Telegram bot identity (2026-09-18)
+
+Исходный commit: `ea924992b13b634bf30f70ef330785200ec3100b`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена без
+commit, push и реальной замены локального bot state.
+
+### Реализовано
+
+- Добавлен отдельный session-level PostgreSQL maintenance lock `(526008, 66)`.
+  Production worker до polling/delivery удерживает shared lock на выделенной session;
+  несколько worker совместимы. Оператор использует fail-fast exclusive try-lock и
+  получает `WORKER_ACTIVE` без мутации, пока жив хотя бы один worker.
+- Потеря maintenance session abort-ит root runtime и запускает coordinated shutdown.
+  Shared/exclusive unlock проверяется; повреждённая session уничтожается, здоровая
+  освобождается ровно один раз. Loops полностью settle до release guard, а pool и
+  Prisma закрываются только после него.
+- Worker pool увеличен до шести slots: один maintenance, один polling leader и четыре
+  delivery attempts. Polling/rate-gate keys и retry/delivery policy не менялись.
+- Добавлен replacement service. После fake-testable `getMe` и совпадения configured
+  username без учёта регистра он требует инициализированный singleton; совпадающая identity
+  возвращает bounded `NO_CHANGE`, same-id username change не запускает destructive
+  replacement.
+- Под exclusive lock одна транзакция блокирует singleton `FOR UPDATE`, повторно
+  сверяет старую identity и database time, отключает только active client/admin
+  connections с `BOT_REPLACED`, отзывает unused/unrevoked tokens, переводит все
+  `PENDING`/`PROCESSING` jobs (включая `DIRECT_CHAT`) в terminal `CANCELLED`,
+  очищает leases, заменяет identity и сбрасывает offset/readiness. Disabled connections
+  и terminal history сохраняются; любая ошибка полностью откатывает изменения.
+- Добавлена TTY-only команда `npm run telegram:replace-bot`. Token/username читаются
+  только из env существующим parser; argv и pipe запрещены. Требуется дословное
+  подтверждение `REPLACE TELEGRAM BOT`; token, API URL, identity, raw response/error
+  не печатаются. Exclusive lock освобождается в `finally`.
+- Обновлены Node-safe exports, ADR-0014, технический план, runtime, roadmap и отдельный
+  операторский runbook. Схема и миграции не менялись.
+
+### Проверки
+
+- Изменённые unit-наборы maintenance/replacement/worker/entrypoint: **36/36**.
+- Новый PostgreSQL integration suite: **5/5** в автоматически созданной и удалённой
+  `zaprosto_test_*` базе. Проверены shared/exclusive semantics, сквозной
+  `WORKER_ACTIVE` без мутации, освобождение exclusive lock, полная successful
+  replacement-семантика, сохранение terminal history, state conflict и полный rollback
+  после искусственной ошибки. Bot API был только fake; реальной сети не было.
+- После runner отдельно подтверждены **0** временных `zaprosto_test_*` баз и **0**
+  maintenance advisory locks.
+- Успешно прошли `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run worker:build`, production `npm run build`, `docker compose config` и
+  `git diff --check`.
+- Полные `test:postgres` и Playwright не запускались по условию задачи; UI,
+  producers и delivery retry policy не менялись.
+
+### Границы и продолжение
+
+06.6A не реализует `deleteWebhook`/webhook transition (06.6B), cleanup/retention,
+health/metrics и полный acceptance/security аудит этапа 06. Пользователи после
+реальной replacement должны подключиться заново; команда в этой задаче не запускалась
+против локального bot state.

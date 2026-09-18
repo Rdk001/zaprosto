@@ -16,6 +16,11 @@ import {
 import { createTelegramFetchTransport } from "./fetch-transport";
 import { TelegramOutboxDispatcher } from "./outbox-dispatcher";
 import { TelegramOutboxRepository } from "./outbox-repository";
+import {
+  PostgresTelegramMaintenanceLockSource,
+  type TelegramMaintenanceLockSession,
+  type TelegramMaintenanceLockSource,
+} from "./maintenance-lock";
 import { PostgresTelegramPollingLeaderSource } from "./polling-leader";
 import {
   TelegramPollingOrchestrator,
@@ -27,7 +32,7 @@ import { parseTelegramRuntimeConfiguration, type TelegramEnvironment } from "./r
 import { registerTelegramWorkerPoolErrorHandler } from "./worker-pool";
 
 export const TELEGRAM_WORKER_DELIVERY_CONCURRENCY = 4;
-export const TELEGRAM_WORKER_POOL_MAX = TELEGRAM_WORKER_DELIVERY_CONCURRENCY + 1;
+export const TELEGRAM_WORKER_POOL_MAX = TELEGRAM_WORKER_DELIVERY_CONCURRENCY + 2;
 
 export type TelegramWorkerDiagnosticCode =
   | TelegramPollingDiagnosticCode
@@ -51,7 +56,12 @@ type WorkerDatabase = Pick<PrismaClient, "$disconnect">;
 type WorkerPool = Pick<Pool, "end">;
 
 export class TelegramWorkerRuntimeError extends Error {
-  constructor(readonly code: "WORKER_ROOT_LOOP_EXITED") {
+  constructor(
+    readonly code:
+      | "WORKER_ROOT_LOOP_EXITED"
+      | "WORKER_MAINTENANCE_GUARD_FAILED"
+      | "WORKER_MAINTENANCE_GUARD_LOST",
+  ) {
     super(code);
     this.name = "TelegramWorkerRuntimeError";
   }
@@ -64,12 +74,15 @@ export class TelegramWorkerRuntimeError extends Error {
 export class TelegramWorkerRuntime {
   private runPromise: Promise<void> | undefined;
   private cleanupPromise: Promise<void> | undefined;
+  private maintenanceAcquirePromise: Promise<TelegramMaintenanceLockSession> | undefined;
+  private maintenanceSession: TelegramMaintenanceLockSession | undefined;
   private stopping = false;
 
   constructor(
     private readonly dependencies: {
       polling: TelegramWorkerRootLoop;
       delivery: TelegramWorkerRootLoop;
+      maintenance: Pick<TelegramMaintenanceLockSource, "acquireWorker">;
       pool: WorkerPool;
       database: WorkerDatabase;
       unregisterPoolErrorHandler: () => void;
@@ -92,6 +105,11 @@ export class TelegramWorkerRuntime {
         this.dependencies.polling.stop(),
         this.dependencies.delivery.stop(),
       ]);
+      if (this.maintenanceAcquirePromise) {
+        const acquired = await this.maintenanceAcquirePromise.catch(() => undefined);
+        this.maintenanceSession ??= acquired;
+      }
+      await Promise.allSettled([this.maintenanceSession?.release()]);
       await Promise.allSettled([
         this.dependencies.pool.end(),
         this.dependencies.database.$disconnect(),
@@ -111,17 +129,36 @@ export class TelegramWorkerRuntime {
       return;
     }
 
+    this.maintenanceAcquirePromise = this.dependencies.maintenance.acquireWorker();
+    try {
+      this.maintenanceSession = await this.maintenanceAcquirePromise;
+    } catch {
+      await this.cleanup();
+      if (this.stopping) return;
+      throw new TelegramWorkerRuntimeError("WORKER_MAINTENANCE_GUARD_FAILED");
+    }
+    if (this.stopping) {
+      await this.cleanup();
+      return;
+    }
+
     const polling = Promise.resolve().then(() => this.dependencies.polling.run());
     const delivery = Promise.resolve().then(() => this.dependencies.delivery.run());
-    await Promise.race([
+    const guardLost = new Promise<"GUARD_LOST">((resolve) => {
+      const signal = this.maintenanceSession?.signal;
+      if (signal?.aborted) resolve("GUARD_LOST");
+      else signal?.addEventListener("abort", () => resolve("GUARD_LOST"), { once: true });
+    });
+    const first = await Promise.race([
       polling.then(
-        () => undefined,
-        () => undefined,
+        () => "ROOT_EXIT" as const,
+        () => "ROOT_EXIT" as const,
       ),
       delivery.then(
-        () => undefined,
-        () => undefined,
+        () => "ROOT_EXIT" as const,
+        () => "ROOT_EXIT" as const,
       ),
+      guardLost,
     ]);
 
     if (this.stopping) {
@@ -130,7 +167,9 @@ export class TelegramWorkerRuntime {
     }
 
     await this.cleanup();
-    throw new TelegramWorkerRuntimeError("WORKER_ROOT_LOOP_EXITED");
+    throw new TelegramWorkerRuntimeError(
+      first === "GUARD_LOST" ? "WORKER_MAINTENANCE_GUARD_LOST" : "WORKER_ROOT_LOOP_EXITED",
+    );
   }
 }
 
@@ -159,6 +198,7 @@ export function createTelegramWorkerRuntime(
     idleTimeoutMillis: 30_000,
   });
   const unregisterPoolErrorHandler = registerTelegramWorkerPoolErrorHandler(pool, input.logger);
+  const maintenance = new PostgresTelegramMaintenanceLockSource(pool);
   const state = new TelegramBotStateRepository(database);
   const configuration = () => parseTelegramRuntimeConfiguration(input.environment);
   const createApi = (
@@ -203,6 +243,7 @@ export function createTelegramWorkerRuntime(
   return new TelegramWorkerRuntime({
     polling,
     delivery,
+    maintenance,
     pool,
     database,
     unregisterPoolErrorHandler,

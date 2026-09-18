@@ -86,11 +86,17 @@ lease recovery, ровно один dispatcher batch на tick, abortable pause/
 останавливать polling, но не исходящую delivery. Delivery supervisor периодически
 перепроверяет identity, запускает dispatcher lifecycle только в `VERIFIED`, а при
 потере readiness останавливает его с settlement начатых attempts. Production worker
-собирает polling и delivery на одном Prisma client и bounded `pg.Pool(max=5)`,
+собирает polling и delivery на одном Prisma client и bounded `pg.Pool(max=6)`,
 использует concurrency 4 и общий идемпотентный graceful shutdown.
 
-Фактическая оставшаяся граница этапа 06: отдельная операторская замена bot identity
-с `BOT_REPLACED`, cleanup/retention, согласованные health/metrics и операторский
+**06.6A реализована.** Production worker до обоих loops удерживает shared PostgreSQL
+maintenance lock на отдельной session; потеря session вызывает coordinated shutdown.
+TTY-only команда проверяет нового бота через `getMe`, требует typed confirmation и
+берёт fail-fast exclusive lock. Под ним одна транзакция отключает активные connections
+с `BOT_REPLACED`, отзывает unused tokens, terminal-cancel незавершённые jobs, заменяет
+identity и сбрасывает offset/readiness. Terminal history сохраняется.
+
+Фактическая оставшаяся граница этапа 06: cleanup/retention, согласованные health/metrics и операторский
 webhook-transition command, затем полный unit/PostgreSQL/E2E/security acceptance.
 Эти части не скрыты внутри 06.5H; весь MVP и ADR-0014 ещё не объявлены принятыми.
 
