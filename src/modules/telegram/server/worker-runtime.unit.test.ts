@@ -38,6 +38,7 @@ function setup() {
   const order: string[] = [];
   const polling = rootLoop(order, "polling");
   const delivery = rootLoop(order, "delivery");
+  const dataCleanup = rootLoop(order, "cleanup");
   const pool = { end: vi.fn(async () => order.push("pool:end")) };
   const database = { $disconnect: vi.fn(async () => order.push("database:disconnect")) };
   const unregister = vi.fn(() => order.push("pool:unregister"));
@@ -53,6 +54,7 @@ function setup() {
   const runtime = new TelegramWorkerRuntime({
     polling,
     delivery,
+    dataCleanup,
     maintenance,
     pool: pool as never,
     database: database as never,
@@ -62,6 +64,7 @@ function setup() {
     runtime,
     polling,
     delivery,
+    dataCleanup,
     maintenance,
     maintenanceSession,
     controller,
@@ -73,11 +76,12 @@ function setup() {
 }
 
 describe("TelegramWorkerRuntime", () => {
-  it("starts polling and delivery together and cleans resources after both stop", async () => {
+  it("starts polling, delivery and cleanup together and cleans resources after stop", async () => {
     const {
       runtime,
       polling,
       delivery,
+      dataCleanup,
       maintenance,
       maintenanceSession,
       pool,
@@ -89,12 +93,14 @@ describe("TelegramWorkerRuntime", () => {
     await vi.waitFor(() => {
       expect(polling.run).toHaveBeenCalledOnce();
       expect(delivery.run).toHaveBeenCalledOnce();
+      expect(dataCleanup.run).toHaveBeenCalledOnce();
       expect(maintenance.acquireWorker).toHaveBeenCalledOnce();
     });
 
     await Promise.all([runtime.stop(), runtime.stop(), running]);
     expect(polling.stop).toHaveBeenCalledOnce();
     expect(delivery.stop).toHaveBeenCalledOnce();
+    expect(dataCleanup.stop).toHaveBeenCalledOnce();
     expect(pool.end).toHaveBeenCalledOnce();
     expect(database.$disconnect).toHaveBeenCalledOnce();
     expect(unregister).toHaveBeenCalledOnce();
@@ -106,12 +112,13 @@ describe("TelegramWorkerRuntime", () => {
   });
 
   it("turns an unexpected root-loop exit into coordinated shutdown", async () => {
-    const { runtime, polling, delivery, pool, database } = setup();
+    const { runtime, polling, delivery, dataCleanup, pool, database } = setup();
     const pollingRun = polling.run as ReturnType<typeof vi.fn>;
     pollingRun.mockResolvedValueOnce(undefined);
 
     await expect(runtime.run()).rejects.toMatchObject({ code: "WORKER_ROOT_LOOP_EXITED" });
     expect(delivery.stop).toHaveBeenCalledOnce();
+    expect(dataCleanup.stop).toHaveBeenCalledOnce();
     expect(pool.end).toHaveBeenCalledOnce();
     expect(database.$disconnect).toHaveBeenCalledOnce();
   });
@@ -156,12 +163,13 @@ describe("TelegramWorkerRuntime", () => {
   });
 
   it("does not start either root loop until the shared maintenance lock is held", async () => {
-    const { polling, delivery, maintenanceSession } = setup();
+    const { polling, delivery, dataCleanup, maintenanceSession } = setup();
     const acquired = deferred<typeof maintenanceSession>();
     const acquireWorker = vi.fn(() => acquired.promise);
     const waiting = new TelegramWorkerRuntime({
       polling,
       delivery,
+      dataCleanup,
       maintenance: { acquireWorker },
       pool: { end: vi.fn(async () => undefined) } as never,
       database: { $disconnect: vi.fn(async () => undefined) } as never,
@@ -172,14 +180,16 @@ describe("TelegramWorkerRuntime", () => {
     await vi.waitFor(() => expect(acquireWorker).toHaveBeenCalledOnce());
     expect(polling.run).not.toHaveBeenCalled();
     expect(delivery.run).not.toHaveBeenCalled();
+    expect(dataCleanup.run).not.toHaveBeenCalled();
     acquired.resolve(maintenanceSession);
     await vi.waitFor(() => expect(polling.run).toHaveBeenCalledOnce());
+    expect(dataCleanup.run).toHaveBeenCalledOnce();
     await waiting.stop();
     await running;
   });
 
   it("turns maintenance session loss into coordinated root shutdown", async () => {
-    const { runtime, polling, delivery, controller, maintenanceSession } = setup();
+    const { runtime, polling, delivery, dataCleanup, controller, maintenanceSession } = setup();
     const running = runtime.run();
     await vi.waitFor(() => expect(delivery.run).toHaveBeenCalledOnce());
 
@@ -187,6 +197,7 @@ describe("TelegramWorkerRuntime", () => {
     await expect(running).rejects.toMatchObject({ code: "WORKER_MAINTENANCE_GUARD_LOST" });
     expect(polling.stop).toHaveBeenCalledOnce();
     expect(delivery.stop).toHaveBeenCalledOnce();
+    expect(dataCleanup.stop).toHaveBeenCalledOnce();
     expect(maintenanceSession.release).toHaveBeenCalledOnce();
   });
 
@@ -198,6 +209,7 @@ describe("TelegramWorkerRuntime", () => {
     const runtime = new TelegramWorkerRuntime({
       polling,
       delivery: rootLoop(order, "delivery"),
+      dataCleanup: rootLoop(order, "cleanup"),
       maintenance: {
         acquireWorker: vi.fn(async () => ({
           mode: "WORKER_SHARED" as const,

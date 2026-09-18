@@ -1,5 +1,15 @@
 export { createTelegramBotApi, TelegramBotApiError } from "./bot-api";
 export {
+  TELEGRAM_CLEANUP_MAX_BATCH_SIZE,
+  TelegramCleanupRepository,
+  TelegramCleanupRepositoryError,
+} from "./cleanup-repository";
+export {
+  TELEGRAM_CLEANUP_DEFAULT_BATCH_SIZE,
+  TELEGRAM_CLEANUP_DEFAULT_INTERVAL_MS,
+  TelegramCleanupSupervisor,
+} from "./cleanup-supervisor";
+export {
   runTelegramBotReplacementCommand,
   telegramBotReplacementCommandSafeCode,
   TELEGRAM_REPLACEMENT_CONFIRMATION,

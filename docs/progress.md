@@ -2098,3 +2098,59 @@ commit, push и запуска реальной операторской ком�
 06.6B не добавляет cleanup/retention, health/metrics, UI, миграции или новые
 delivery/polling policy. Эти эксплуатационные задачи остаются 06.6C+ вместе с полным
 unit/PostgreSQL/E2E/security acceptance этапа 06. ADR-0014 остаётся `Proposed`.
+
+## Этап 06.6C — production cleanup/retention Telegram-данных (2026-09-18)
+
+Исходный commit: `b4f6a3eb81c324e44ad16e5ebddbf4422bf063a5`; ветка `main`,
+`HEAD` и `origin/main` совпадали, рабочее дерево было чистым. Работа выполнена
+без commit и push.
+
+### Реализовано
+
+- Добавлен `TelegramCleanupRepository`: один короткий `ReadCommitted` run,
+  единый PostgreSQL `clock_timestamp()`, общий batch limit, стабильный порядок,
+  `FOR UPDATE SKIP LOCKED`, statement/lock timeout и safe storage code без
+  driver/SQL cause.
+- Точный порядок — адресные rejection jobs → остальные terminal outbox → terminal
+  tokens → disabled client/admin connections → retired active client connections.
+  Outbox удаляется до connections; connection selectors дважды проверяют отсутствие
+  outbox references, а существующие `ON DELETE RESTRICT` остаются последним барьером.
+- Retention: адресный terminal `TELEGRAM_CONNECTION_REJECTED` удаляется на границе
+  24 часа; остальные terminal outbox — только старше 90 дней; used/revoked/expired
+  token — только старше 30 дней от первого terminal момента; disabled connections —
+  только старше 90 дней. Active client connection удаляется только после 90 дней от
+  `endsAt` прошедшей `SCHEDULED` записи либо от history timestamp текущего
+  terminal status. Active admin connections и `TelegramBotState` не затрагиваются.
+- Добавлен независимый `TelegramCleanupSupervisor`: production batch 100, жёсткий
+  допустимый диапазон 1–500, запуск сразу после maintenance guard и abortable cadence
+  15 минут. Ошибка логирует только `TELEGRAM_CLEANUP_FAILED`, не завершает loop и
+  не останавливает polling/delivery; graceful stop ждёт текущую DB-операцию.
+- Новая версионированная migration добавляет только partial/expression cleanup
+  indexes для terminal outbox/token и disabled connections. Prisma models, business
+  statuses, producers, delivery/polling/retry/rate-limit и UI не менялись.
+- Typed result содержит только шесть bounded counters. В cleanup нет Bot API,
+  transport, recipient/token/hash/name/phone/webhook URL или других персональных/
+  секретных значений в result и diagnostics.
+
+### Проверки
+
+- Изменённые unit-наборы cleanup supervisor и worker runtime: **11/11**.
+  Проверены defaults/limits, AbortSignal/graceful stop, продолжение после storage
+  failure, единственный bounded safe code и production composition третьего loop.
+- Целевой PostgreSQL integration suite: **4/4** через штатный isolated runner.
+  Проверены точные границы 24 часа/30 дней/90 дней с ±1 мс, PENDING/PROCESSING и
+  свежие terminal rows, действующие tokens, общий batch и повторный run, FK-порядок,
+  active/disabled/terminal connections, singleton state и конкурентные cleanup runs.
+  Глобальный `fetch` был запрещён spy; Telegram API/network не вызывались.
+- Успешны `npm run format:check`, `npm run lint`, `npm run typecheck`,
+  `npm run worker:build` и `git diff --check`.
+- После PostgreSQL runner отдельно подтверждены **0** временных
+  `zaprosto_test_*` баз и **0** advisory locks.
+- Полные `npm test`, `test:postgres`, Playwright и полный security/acceptance
+  audit намеренно не запускались по условию задачи.
+
+### Границы и продолжение
+
+06.6C не добавляет health/metrics endpoint и не объявляет этап 06 или ADR-0014
+принятыми. Согласованные health/metrics и полный unit/PostgreSQL/E2E/security
+acceptance остаются следующими отдельными задачами.

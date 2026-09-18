@@ -104,9 +104,17 @@ configured/фактическую/сохранённую bot identity, сохр�
 `NO_CHANGE`, `TRANSITIONED` и bounded failure codes не раскрывают URL или Telegram
 identity; состояние БД и offset не изменяются.
 
-Фактическая оставшаяся граница этапа 06: cleanup/retention и согласованные
-health/metrics (06.6C+), затем полный unit/PostgreSQL/E2E/security acceptance.
-Эти части не скрыты внутри 06.5H; весь MVP и ADR-0014 ещё не объявлены принятыми.
+**06.6C реализована.** Production worker запускает независимый retention-loop:
+сразу при старте и затем каждые 15 минут он удаляет не более 100 строк за run.
+Repository использует единый PostgreSQL timestamp, общий лимит batch,
+`FOR UPDATE SKIP LOCKED`, короткую транзакцию и порядок outbox → tokens →
+connections. Ошибка даёт только `TELEGRAM_CLEANUP_FAILED` и не останавливает
+polling/delivery. Добавлены cleanup-индексы и PostgreSQL проверки точных границ,
+FK-порядка, повторного/конкурентного запуска и сохранения активных данных.
+
+Фактическая оставшаяся граница этапа 06: согласованные health/metrics, затем полный
+unit/PostgreSQL/E2E/security acceptance. Эти части не скрыты внутри 06.6C; весь MVP
+и ADR-0014 ещё не объявлены принятыми.
 
 ## 07. Подготовка MVP к демонстрации
 

@@ -810,3 +810,42 @@ polling readiness и продолжает сохранённый offset; deliver
 активным webhook. Public result содержит только `NO_CHANGE` или `TRANSITIONED`,
 ошибки — bounded safe code. URL webhook, bot id/username, token, raw response,
 description, request URL и cause не входят в result, error или terminal output.
+
+## Production cleanup и retention (06.6C)
+
+`TelegramCleanupRepository.run({ batchSize, now? })` выполняет один короткий
+`ReadCommitted` run с `statement_timeout=4s`, `lock_timeout=1s` и общим
+лимитом 1–500 строк. Production не передаёт `now`: repository один раз читает
+`clock_timestamp()::timestamptz(3)` и использует этот момент во всех категориях.
+Опциональный `now` предназначен только для детерминированных тестов.
+
+Порядок удаления фиксирован:
+
+1. terminal `TELEGRAM_CONNECTION_REJECTED` с `directChatId` при возрасте
+   `finishedAt >= 24 часа`;
+2. остальные terminal outbox при возрасте строго больше 90 дней;
+3. used/revoked/expired link tokens строго старше 30 дней, где terminal time —
+   первое из `usedAt`, `revokedAt`, `expiresAt`;
+4. disabled client/admin connections строго старше 90 дней;
+5. активные client connections: строго через 90 дней после `endsAt` прошедшей
+   `SCHEDULED` Appointment либо после `AppointmentStatusHistory.changedAt`
+   текущего `COMPLETED/NO_SHOW/CANCELLED`.
+
+Каждая категория выбирает только оставшийся общий лимит в стабильном порядке через
+`FOR UPDATE SKIP LOCKED`, затем удаляет выбранные строки. Поэтому параллельные
+worker-процессы делят работу без ожидания уже захваченных rows и каждый остаётся в
+своём batch limit. Outbox удаляется раньше connections; обе connection-категории
+повторно требуют `NOT EXISTS` outbox reference, а `ON DELETE RESTRICT` остаётся
+последним барьером. `PENDING/PROCESSING`, свежие terminal rows, действующие tokens,
+активные admin connections и `TelegramBotState` не входят в selectors.
+
+Миграция `20260918120000_telegram_cleanup_retention` добавляет только partial/
+expression indexes для terminal outbox, terminal token time и disabled connections;
+бизнес-поля и статусы не меняются.
+
+`TelegramCleanupSupervisor` является третьим независимым root loop production
+worker. Он запускает batch 100 сразу после получения shared maintenance guard,
+затем не чаще раза в 15 минут. Pause abortable; shutdown ждёт текущую короткую
+DB-транзакцию и не начинает новую. Storage/SQL/driver error отбрасывается:
+наружу и logger выходит только `TELEGRAM_CLEANUP_FAILED`. Ошибка cleanup не
+останавливает polling или delivery. Cleanup не создаёт Bot API и не выполняет HTTP.

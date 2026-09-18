@@ -4,6 +4,11 @@ import type { PrismaClient } from "../../../generated/prisma/client";
 import { createPrismaClient } from "../../../server/db/create-prisma-client";
 import { createTelegramBotApi, type TelegramBotApi } from "./bot-api";
 import { TelegramBotStateRepository } from "./bot-state-repository";
+import { TelegramCleanupRepository } from "./cleanup-repository";
+import {
+  TelegramCleanupSupervisor,
+  type TelegramCleanupDiagnosticCode,
+} from "./cleanup-supervisor";
 import { TelegramDeliveryAttempt } from "./delivery-attempt";
 import { TelegramDeliveryOrchestrator } from "./delivery-orchestrator";
 import { TelegramDeliveryPreflight } from "./delivery-preflight";
@@ -37,6 +42,7 @@ export const TELEGRAM_WORKER_POOL_MAX = TELEGRAM_WORKER_DELIVERY_CONCURRENCY + 2
 export type TelegramWorkerDiagnosticCode =
   | TelegramPollingDiagnosticCode
   | TelegramDeliverySupervisorDiagnosticCode
+  | TelegramCleanupDiagnosticCode
   | "TELEGRAM_DELIVERY_DISPATCH_FAILED"
   | "TELEGRAM_DELIVERY_RECOVERY_FAILED"
   | "WORKER_STARTED"
@@ -82,6 +88,7 @@ export class TelegramWorkerRuntime {
     private readonly dependencies: {
       polling: TelegramWorkerRootLoop;
       delivery: TelegramWorkerRootLoop;
+      dataCleanup: TelegramWorkerRootLoop;
       maintenance: Pick<TelegramMaintenanceLockSource, "acquireWorker">;
       pool: WorkerPool;
       database: WorkerDatabase;
@@ -104,6 +111,7 @@ export class TelegramWorkerRuntime {
       await Promise.allSettled([
         this.dependencies.polling.stop(),
         this.dependencies.delivery.stop(),
+        this.dependencies.dataCleanup.stop(),
       ]);
       if (this.maintenanceAcquirePromise) {
         const acquired = await this.maintenanceAcquirePromise.catch(() => undefined);
@@ -144,6 +152,7 @@ export class TelegramWorkerRuntime {
 
     const polling = Promise.resolve().then(() => this.dependencies.polling.run());
     const delivery = Promise.resolve().then(() => this.dependencies.delivery.run());
+    const dataCleanup = Promise.resolve().then(() => this.dependencies.dataCleanup.run());
     const guardLost = new Promise<"GUARD_LOST">((resolve) => {
       const signal = this.maintenanceSession?.signal;
       if (signal?.aborted) resolve("GUARD_LOST");
@@ -155,6 +164,10 @@ export class TelegramWorkerRuntime {
         () => "ROOT_EXIT" as const,
       ),
       delivery.then(
+        () => "ROOT_EXIT" as const,
+        () => "ROOT_EXIT" as const,
+      ),
+      dataCleanup.then(
         () => "ROOT_EXIT" as const,
         () => "ROOT_EXIT" as const,
       ),
@@ -239,10 +252,15 @@ export function createTelegramWorkerRuntime(
     },
     logger: input.logger,
   });
+  const dataCleanup = new TelegramCleanupSupervisor({
+    cleanup: new TelegramCleanupRepository(database),
+    logger: input.logger,
+  });
 
   return new TelegramWorkerRuntime({
     polling,
     delivery,
+    dataCleanup,
     maintenance,
     pool,
     database,
