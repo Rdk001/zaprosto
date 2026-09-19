@@ -2,7 +2,7 @@
 
 ## Текущий статус
 
-Выполнены этапы **00 — документационная инициализация**, **01 — согласование стека и архитектуры**, **02 — каркас приложения и модель предметной области** и **03 — расчёт доступности**. Также выполнены **04.1 — серверное создание записи и отмена по защищённой ссылке** и **04.2 — клиентский интерфейс онлайн-записи**. Telegram и отправка уведомлений остаются этапом 06; весь MVP ещё не завершён.
+Выполнены и приняты этапы **00–06**, включая финальную техническую и security-приёмку Telegram 06.7. Весь MVP ещё не завершён: следующим и единственным оставшимся этапом является **07 — подготовка MVP к демонстрации**.
 
 Результат 04.2 принят пользователем после повторной проверки. **05.1 прошла отдельную проверку и принята пользователем.** В отдельной проверке 05.2 обнаружен дефект согласования условий услуги; исправление реализовано и прошло полный повторный набор проверок (264 Vitest, 53 E2E). **Этап 05.2 и исправление согласования условий прошли отдельную проверку и приняты пользователем.** Рабочие учётные данные не создавались. Ограничения проверки и открытый вопрос npm audit сохранены; пользователь разрешил фиксацию 05.2 и отправку в origin/main после проверки актуальной удалённой ветки.
 
@@ -18,7 +18,7 @@
 
 **05.7.2 — административное изменение параметров визита и перенос прошла независимую проверку и принята пользователем: 602/602 unit/integration и 133/133 E2E успешно.** Подтверждены KEEP_CURRENT/CATALOG, SPECIFIC/ANY, транзакционный перенос, конкурентность, safe unknown outcome и полная навигация. Исходный HEAD и origin/main: c7c6d91e1a10eeee895de9498f9b946ea3b3d01a. ADR-0013 переведён в Accepted; пользователь разрешил фиксацию ровно 23 перечисленных файлов одним коммитом и обычный push в origin/main. Telegram/outbox, медиа и deployment не начаты.
 
-**06.1 выполнен как архитектурное проектирование; 06.2A–06.2C и 06.3A–06.3C реализованы.** Слой данных, runtime primitives, adapter, outbox repository, readiness, одноразовые deep links и транзакционная обработка `/start` образуют проверенное основание Telegram runtime. Polling, offset и worker integration остаются этапом 06.3D; весь этап 06 не завершён. ADR-0014 остаётся `Proposed`.
+**Этап 06 Telegram завершён и принят после 06.7.** Реализация 06.1–06.6D прошла полный unit/PostgreSQL/E2E/security-аудит; [ADR-0014](decisions/0014-telegram-notifications.md) переведён в `Accepted`. Реальные Telegram credentials и сеть не использовались.
 
 ### Выполнено
 
@@ -2203,3 +2203,61 @@ commit и push.
 06.6D не добавляет внешнюю telemetry, UI, schema/migration или operator mutation.
 Полный unit/PostgreSQL/E2E/security acceptance этапа 06 остаётся следующей отдельной
 задачей; ADR-0014 остаётся `Proposed`.
+
+## Этап 06.7 — финальная приёмка и security-аудит Telegram (2026-09-19)
+
+Исходная база: чистый `main`, `HEAD = origin/main = 21a438f69ef5a4f7f1866a697f6cdb4f276ca6e7`.
+Commit и push не выполнялись.
+
+### Матрица принятого покрытия
+
+| Требование                                                    | Реализация и доказательство                                                                                                                                                                                                       |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Env/config/readiness и secret boundary                        | Раздельные worker/web parsers, getMe/identity/webhook readiness, client build scan без token/API origin; unit и PostgreSQL readiness suites                                                                                       |
+| Link lifecycle, rate limits, private `/start`, polling/offset | Link service/repository, strict parser/start processor, leader/session fencing и transactional offset; link/start/polling integration и client/admin E2E                                                                          |
+| Transactional producers                                       | Create/cancel/status/reschedule/reminder fan-out и invalidation в исходных бизнес-транзакциях; producer integration и E2E replay/rollback                                                                                         |
+| Delivery и worker lifecycle                                   | Payload/message builder, preflight, fenced attempt, retry/429, distributed rate gate, dispatcher, recovery, supervisor и graceful shutdown; runtime smoke проходит через настоящий Bot API adapter поверх `FakeTelegramTransport` |
+| Операторские и эксплуатационные границы                       | TTY-only replacement/webhook transition, maintenance lock, cleanup retention/FK ordering, защищённый admin health и неизменный public liveness; unit/PostgreSQL/API tests и runbooks                                              |
+| Migrations и бесплатный контур                                | Девять миграций deploy/status на fresh isolated DB; PostgreSQL outbox/advisory coordination без платных сервисов, реальных credentials и внешней Telegram-сети                                                                    |
+
+### Findings и исправления
+
+- **P1 — `npm test` импортировал integration suites без isolated DB и завершался
+  ошибкой после 859 успешных unit-тестов.** Script ограничен проектом `unit`;
+  PostgreSQL-покрытие по-прежнему обязательно выполняется отдельным
+  `test:postgres`.
+- **P1 — `test:postgres` и `test:e2e` не запускались в clean checkout без
+  untracked `.env`.** Оба script сначала читают безопасные локальные defaults из
+  `.env.example`, затем допускают локальное переопределение из `.env`.
+- **P1 — полный PostgreSQL-набор воспроизводимо падал на общем singleton
+  `business_settings(1)`.** Preflight fixture теперь сохраняет прежнее состояние,
+  использует upsert и восстанавливает либо удаляет только принадлежащую ему строку.
+  Полный повтор прошёл 1397/1397.
+- **P2 — production delivery smoke подменял весь Telegram API, а не transport.**
+  Тест усилен: readiness и отправка проходят настоящий adapter через
+  `FakeTelegramTransport`; зафиксированы ровно `getMe → sendMessage`.
+- Runtime/security дефектов продукта, PII/secret leaks, real Telegram calls,
+  небезопасного dynamic SQL/command execution или блокирующих расхождений не найдено.
+
+### Финальные проверки
+
+- `npm run format:check`, `npm run lint`, `npm run typecheck` — успешно.
+- `npm test` — **73 файла, 859/859**.
+- `npm run test:postgres` — **110 файлов, 1397/1397**; отдельный усиленный
+  fake-transport runtime smoke — **2/2**.
+- `npm run test:e2e` — **135/135 Chromium**, production server и отдельная fresh DB.
+- `npm run build` — Prisma generate, Next.js production build и bundled ESM worker
+  успешны.
+- `docker compose config` и `git diff --check` — успешно.
+- Fresh runner применил все **9** миграций через `prisma migrate deploy`, затем
+  `prisma migrate status` подтвердил `Database schema is up to date`.
+- После runner: **0** временных `zaprosto_test_*` БД и **0** advisory locks.
+- Security scan: tracked env-файл только `.env.example`; credential-named files,
+  token-shaped значения вне тестов, private-key markers, client-bundle
+  `TELEGRAM_BOT_TOKEN`/Bot API origin и token-shaped значения в worker bundle —
+  **0**. В integration/E2E нет литерала `api.telegram.org`.
+
+### Итог
+
+Этап 06 принят; ADR-0014 — `Accepted`. Весь MVP ещё не объявлен готовым.
+Следующий этап — только 07, подготовка MVP к демонстрации.

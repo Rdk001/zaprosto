@@ -1,7 +1,8 @@
 # ADR-0014: Архитектура Telegram-подключений и надёжного outbox
 
-- Статус: Proposed
+- Статус: Accepted
 - Дата: 2026-09-04
+- Принято: 2026-09-19, финальная приёмка 06.7
 
 ## Контекст
 
@@ -245,6 +246,16 @@ Webhook уменьшает задержку и снимает long-poll соед
 - Worker downtime свыше 24 часов может необратимо потерять Telegram updates согласно внешнему лимиту; пользователь восстанавливается новой deep link.
 - Между последней проверкой и внешним `sendMessage` остаётся неизбежное окно: отмена, перенос или отзыв connection, победившие уже после начала HTTP-запроса, не могут отозвать сообщение.
 - `SENT` означает полученный успешный ответ Bot API, а не доказательство прочтения пользователем.
-- ADR остаётся Proposed до реализации и приёмки блоков 06.2–06.5.
+- Решение принято после реализации 06.2–06.6D и отдельной финальной приёмки 06.7.
+
+## Приёмка
+
+Реализованный runtime проверен по [описанию Telegram runtime](../telegram-runtime.md)
+и операторским runbook: [наблюдаемость](../telegram-observability-runbook.md),
+[замена бота](../telegram-bot-replacement-runbook.md) и
+[переход webhook → polling](../telegram-webhook-transition-runbook.md).
+Приёмка подтвердила fresh-database migrations, single-leader polling,
+transactional outbox, fake-transport delivery, graceful shutdown, retention,
+защищённый admin health и отсутствие реальных Telegram credentials/network в тестах.
 
 Детальная модель, матрица, протоколы и порядок реализации описаны в [техническом плане этапа 06](../telegram-notifications-plan.md).

@@ -1,7 +1,10 @@
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import type { TelegramBotApi } from "../../src/modules/telegram/server/bot-api";
+import {
+  createTelegramBotApi,
+  type TelegramBotApi,
+} from "../../src/modules/telegram/server/bot-api";
 import { TelegramBotStateRepository } from "../../src/modules/telegram/server/bot-state-repository";
 import { TelegramDeliveryAttempt } from "../../src/modules/telegram/server/delivery-attempt";
 import { TelegramDeliveryOrchestrator } from "../../src/modules/telegram/server/delivery-orchestrator";
@@ -9,6 +12,7 @@ import { TelegramDeliveryPreflight } from "../../src/modules/telegram/server/del
 import { TelegramDeliveryRateGate } from "../../src/modules/telegram/server/delivery-rate-gate";
 import { verifyTelegramDeliveryReadiness } from "../../src/modules/telegram/server/delivery-readiness-service";
 import { TelegramDeliverySupervisor } from "../../src/modules/telegram/server/delivery-supervisor";
+import { FakeTelegramTransport } from "../../src/modules/telegram/server/fake-transport";
 import { TelegramOutboxDispatcher } from "../../src/modules/telegram/server/outbox-dispatcher";
 import { TelegramOutboxRepository } from "../../src/modules/telegram/server/outbox-repository";
 import type { TelegramRuntimeConfiguration } from "../../src/modules/telegram/server/runtime-config";
@@ -76,13 +80,33 @@ describe("Telegram worker delivery runtime with PostgreSQL", () => {
     const due = new Date(Date.now() - 1_000);
     const job = await fixture.seed({ scheduledAt: due, nextAttemptAt: due });
     const sent = deferred<void>();
+    const transport = new FakeTelegramTransport([
+      {
+        kind: "RESPONSE",
+        body: {
+          ok: true,
+          result: {
+            id: 42,
+            is_bot: true,
+            first_name: "Ignored fake bot name",
+            username: "zaprosto_test_bot",
+          },
+        },
+      },
+      {
+        kind: "RESPONSE",
+        body: { ok: true, result: { message_id: 1 } },
+      },
+    ]);
+    const adapter = createTelegramBotApi(transport);
     const api = {
-      getMe: vi.fn(async () => ({ id: 42n, username: "zaprosto_test_bot" })),
-      sendMessage: vi.fn(async () => {
+      ...adapter,
+      async sendMessage(...input: Parameters<TelegramBotApi["sendMessage"]>) {
+        const result = await adapter.sendMessage(...input);
         sent.resolve();
-        return { messageId: 1n };
-      }),
-    } as unknown as TelegramBotApi;
+        return result;
+      },
+    } satisfies TelegramBotApi;
     const state = new TelegramBotStateRepository(database);
     const outbox = new TelegramOutboxRepository(database, { random: () => 0 });
     const rateGate = new TelegramDeliveryRateGate(pool);
@@ -123,8 +147,8 @@ describe("Telegram worker delivery runtime with PostgreSQL", () => {
     await bounded(supervisor.stop(), 5_000);
     await bounded(running, 5_000);
 
-    expect(api.getMe).toHaveBeenCalledOnce();
-    expect(api.sendMessage).toHaveBeenCalledOnce();
+    expect(transport.calls.map(({ method }) => method)).toEqual(["getMe", "sendMessage"]);
+    expect(transport.remainingSteps).toBe(0);
     await expect(
       database.notificationOutbox.findUniqueOrThrow({ where: { id: job.id } }),
     ).resolves.toMatchObject({ status: "SENT", leaseToken: null, lastErrorCode: null });

@@ -12,6 +12,12 @@ const concurrentDatabase = createPrismaClient(connectionString);
 const outbox = new TelegramOutboxRepository(database);
 const preflight = new TelegramDeliveryPreflight(database);
 let fixture: Awaited<ReturnType<typeof createOutboxFixture>>;
+let originalSettings: {
+  businessName: string;
+  timezone: string;
+  bookingHorizonDays: number;
+  version: number;
+} | null;
 
 const databaseNow = async () => {
   const [row] = await database.$queryRaw<{ now: Date }[]>`
@@ -138,8 +144,24 @@ async function check(jobId: string, leaseToken: string) {
 
 describe("Telegram delivery preflight PostgreSQL boundary", () => {
   beforeAll(async () => {
-    await database.businessSettings.create({
-      data: { id: 1, businessName: "Preflight fixture", timezone: "Europe/Moscow" },
+    originalSettings = await database.businessSettings.findUnique({
+      where: { id: 1 },
+      select: {
+        businessName: true,
+        timezone: true,
+        bookingHorizonDays: true,
+        version: true,
+      },
+    });
+    await database.businessSettings.upsert({
+      where: { id: 1 },
+      create: { id: 1, businessName: "Preflight fixture", timezone: "Europe/Moscow" },
+      update: {
+        businessName: "Preflight fixture",
+        timezone: "Europe/Moscow",
+        bookingHorizonDays: 30,
+        version: 0,
+      },
     });
     fixture = await createOutboxFixture(database);
   });
@@ -164,7 +186,14 @@ describe("Telegram delivery preflight PostgreSQL boundary", () => {
 
   afterAll(async () => {
     await fixture.cleanup();
-    await database.businessSettings.delete({ where: { id: 1 } });
+    if (originalSettings) {
+      await database.businessSettings.update({
+        where: { id: 1 },
+        data: originalSettings,
+      });
+    } else {
+      await database.businessSettings.delete({ where: { id: 1 } });
+    }
     await concurrentDatabase.$disconnect();
     await database.$disconnect();
   });

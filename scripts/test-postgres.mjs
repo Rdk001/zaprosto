@@ -38,6 +38,7 @@ try {
     TEST_DATABASE_URL: target.toString(),
   };
   await run("node_modules/prisma/build/index.js", ["migrate", "deploy"], env);
+  await run("node_modules/prisma/build/index.js", ["migrate", "status"], env);
   if (process.argv.includes("--e2e")) {
     await run("node_modules/tsx/dist/cli.mjs", ["scripts/seed-demo.ts"], env);
     await run(
