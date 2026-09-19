@@ -396,12 +396,17 @@ test("protected GET and captured direct Action deny lost access and foreign Orig
   expect(await db.appointment.count()).toBe(1);
 });
 
-test("360, 390 and 1440 layouts, keyboard confirmation and focus remain usable", async ({
+test("360, 390, 412 and 1440 layouts, keyboard confirmation and focus remain usable", async ({
   page,
 }, testInfo) => {
   await login(page);
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 1000 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     await page.goto("/admin/appointments/new");
     await expect(page.getByRole("heading", { name: "Создать запись" })).toBeVisible();
     await expect

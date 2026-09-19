@@ -373,11 +373,16 @@ test("logout отклоняет чужой Origin до отзыва", async ({ p
   await page.getByRole("button", { name: "Выйти", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/login$/);
 });
-test("360/390/1440: клавиатура, skip-link, ожидание и отсутствие переполнения", async ({
+test("360/390/412/1440: клавиатура, skip-link, ожидание и отсутствие переполнения", async ({
   page,
 }, info) => {
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     await page.goto("/admin/login?returnTo=https://evil.example");
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "К содержимому", exact: true })).toBeFocused();
@@ -413,8 +418,13 @@ test("360/390/1440: клавиатура, skip-link, ожидание и отс�
   release();
   await expect(page).toHaveURL(origin + "/admin");
   await page.unroute("**/admin/login");
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );

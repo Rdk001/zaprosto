@@ -110,8 +110,13 @@ test("текущие значения, явное сохранение, ошиб
   expect(
     (await db.businessSettings.findUniqueOrThrow({ where: { id: 1 } })).bookingHorizonDays,
   ).toBe(14);
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );

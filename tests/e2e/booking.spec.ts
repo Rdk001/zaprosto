@@ -422,9 +422,14 @@ test("запоздалые окна и смена мастера", async ({ page
   await page.getByRole("button", { name: "Выбрать время →" }).click();
   await expect(page.getByRole("button", { name: "Продолжить →" })).toBeDisabled();
 });
-test("360, 390 и desktop: переполнение, фокус, снимки", async ({ page }, testInfo) => {
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 1000 });
+test("360, 390, 412 и desktop: переполнение, фокус, снимки", async ({ page }, testInfo) => {
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expect

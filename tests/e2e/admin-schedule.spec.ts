@@ -328,7 +328,7 @@ async function fillRowAfterAdd(group: Locator, start: string, end: string) {
   await group.getByRole("button", { name: "Добавить рабочий интервал" }).click();
   await fillRow(group, start, end);
 }
-test("360/390/1440: снимки недели и исключений, фокус, ожидание, зона браузера", async ({
+test("360/390/412/1440: снимки недели и исключений, фокус, ожидание, зона браузера", async ({
   browser,
 }, info) => {
   const context = await browser.newContext({ timezoneId: "America/Los_Angeles" });
@@ -336,8 +336,13 @@ test("360/390/1440: снимки недели и исключений, фоку�
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await login(page);
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     await page.goto(endpoint());
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "К содержимому" })).toBeFocused();

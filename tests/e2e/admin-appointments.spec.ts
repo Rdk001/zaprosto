@@ -161,8 +161,13 @@ test("journal defaults, past/future, cancelled/master filters, snapshots and nav
   await page.getByRole("combobox", { name: "Мастер", exact: true }).selectOption(demoMasterIds[0]);
   await page.getByRole("button", { name: "Показать записи" }).click();
   await expect(page.locator(".journal-item")).toHaveCount(2);
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -274,8 +279,13 @@ test("confirmed cancellation, keyboard, full navigation, history and responsive 
   await page
     .getByLabel("Причина отмены (необязательно)")
     .fill("Вымышленная причина\nВторая строка");
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -642,8 +652,13 @@ for (const status of ["SCHEDULED", "COMPLETED", "NO_SHOW"] as const)
     await fillContacts(page);
     await expect(page.getByText("Будет сохранён номер: +79991112233")).toBeVisible();
     if (status === "SCHEDULED") {
-      for (const width of [360, 390, 1440]) {
-        await page.setViewportSize({ width, height: 900 });
+      for (const { width, height } of [
+        { width: 360, height: 800 },
+        { width: 390, height: 844 },
+        { width: 412, height: 915 },
+        { width: 1440, height: 900 },
+      ]) {
+        await page.setViewportSize({ width, height });
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
           true,
         );

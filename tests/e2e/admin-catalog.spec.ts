@@ -286,12 +286,17 @@ test("новые страницы защищены: HTML и RSC, no-store и CSP
     }
   }
 });
-test("360/390/1440: снимки списков и форм, клавиатура, ожидание, пустые состояния", async ({
+test("360/390/412/1440: снимки списков и форм, клавиатура, ожидание, пустые состояния", async ({
   page,
 }, info) => {
   await login(page);
-  for (const width of [360, 390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const { width, height } of [
+    { width: 360, height: 800 },
+    { width: 390, height: 844 },
+    { width: 412, height: 915 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize({ width, height });
     for (const kind of ["services", "masters"]) {
       await page.goto("/admin/" + kind);
       await page.keyboard.press("Tab");
