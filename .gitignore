@@ -10,9 +10,14 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+!.env.production.example
 *.local
 *.pem
 *.key
+
+# Production secret files are created by the operator and never committed.
+/secrets/*
+!/secrets/README.md
 
 # Logs and temporary files
 *.log

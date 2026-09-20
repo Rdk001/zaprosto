@@ -172,9 +172,20 @@ UTC-моменты существующих визитов, история, snap
 
 Локальный Docker Compose включает PostgreSQL, web-приложение, worker и постоянные volumes. Он не требует платных сервисов.
 
-Production разворачивается на отдельно оплачиваемой инфраструктуре заказчика. Приложение поставляется как переносимые контейнеры, получает настройки через environment variables и не использует специфичные функции конкретного облака. Способ запуска PostgreSQL, файлового хранилища, TLS и резервного копирования выбирается в инфраструктуре заказчика.
+Production разворачивается на Linux-инфраструктуре заказчика отдельным
+`docker-compose.production.yml` без cloud-specific API. PostgreSQL 17 и application
+roles находятся во внутренних сетях; единственная внешняя точка входа — Caddy на
+80/443 с automatic HTTPS. One-shot migration, web, Telegram worker и операторские
+команды используют один immutable application image. Web и worker запускаются
+непривилегированными UID/GID 1001.
 
-Миграции выполняются отдельным release-шагом до запуска новой версии приложения. Резервное копирование должно охватывать PostgreSQL и загруженные изображения.
+PostgreSQL password и Telegram token поступают из отдельных read-only файлов в
+`/run/secrets`; web не получает Telegram credentials. Постоянные named volumes
+хранят БД, media и состояние Caddy. Миграция должна успешно завершиться до старта
+web/worker. Backup и restore rehearsal всегда охватывают PostgreSQL и media.
+Эксплуатационная схема, команды и rollback описаны в
+[production runbook](deployment.md), решение — в
+[ADR-0015](decisions/0015-production-compose-and-handoff.md).
 
 ## Безопасность и персональные данные
 

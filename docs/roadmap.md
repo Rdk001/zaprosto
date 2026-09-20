@@ -141,5 +141,11 @@ Chromium на 360×800, 390×844, 412×915 и 1440×900: проверены resp
 [повторяемый мобильный чек-лист](demo-mobile-checklist.md). Общие UI primitives и
 бизнес-логика не менялись.
 
-MVP ещё не объявляется полностью готовым: остаются deployment/customer handoff и
-финальная упаковка демонстрации.
+**07.2 выполнена.** Подготовлен отдельный self-hosted production Compose: PostgreSQL
+17, one-shot migrations, web и Telegram worker из одного immutable image, Caddy с
+HTTPS и единственными внешними портами 80/443, persistent DB/media, read-only secret
+files, non-root runtime, health checks и graceful shutdown. Добавлены production
+runbook с backup/restore/rollback, release checklist, customer handoff и ADR-0015.
+
+MVP ещё не объявляется полностью готовым: остаётся только 07.3 — финальная упаковка
+демонстрации и итоговая приёмка release-кандидата.

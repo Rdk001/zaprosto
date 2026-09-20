@@ -2,7 +2,7 @@
 
 ## Текущий статус
 
-Выполнены и приняты этапы **00–06**, включая финальную техническую и security-приёмку Telegram 06.7. **07.1 — mobile UX, accessibility и визуальная приёмка критических сценариев — выполнена.** Весь MVP ещё не завершён: остаются deployment/customer handoff и финальная упаковка демонстрации этапа 07.
+Выполнены и приняты этапы **00–06**, включая финальную техническую и security-приёмку Telegram 06.7. **07.1 — mobile UX, accessibility и визуальная приёмка критических сценариев — выполнена. 07.2 — production deployment и customer handoff — выполнена.** Весь MVP ещё не завершён: остаётся финальная упаковка демонстрации и итоговая приёмка release-кандидата 07.3.
 
 Результат 04.2 принят пользователем после повторной проверки. **05.1 прошла отдельную проверку и принята пользователем.** В отдельной проверке 05.2 обнаружен дефект согласования условий услуги; исправление реализовано и прошло полный повторный набор проверок (264 Vitest, 53 E2E). **Этап 05.2 и исправление согласования условий прошли отдельную проверку и приняты пользователем.** Рабочие учётные данные не создавались. Ограничения проверки и открытый вопрос npm audit сохранены; пользователь разрешил фиксацию 05.2 и отправку в origin/main после проверки актуальной удалённой ветки.
 
@@ -2307,3 +2307,59 @@ Commit и push не выполнялись.
 
 Этап 06 принят; ADR-0014 — `Accepted`. Весь MVP ещё не объявлен готовым.
 Следующий этап — только 07, подготовка MVP к демонстрации.
+
+## Этап 07.2 — production deployment и customer handoff (2026-09-20)
+
+Исходная база: чистый `main`, `HEAD = origin/main =
+1cd1755103f35cd7d2898e385677bb607c6873eb`. Commit и push не выполнялись.
+
+### Реализация
+
+- Добавлен отдельный `docker-compose.production.yml`: PostgreSQL 17, one-shot
+  `migrate`, web, Telegram worker и Caddy 2.10.2. Только Caddy публикует host
+  ports 80/443; DB и application ports остаются во внутренних сетях.
+- Один immutable application image обслуживает migration/web/worker и явные
+  операторские роли. Runtime использует UID/GID 1001, `tini`, signal forwarding и
+  writable persistent media. Worker получает Telegram secret, web — нет.
+- PostgreSQL password и Telegram token читаются из отдельных read-only файлов,
+  отсутствуют в YAML, argv, image environment и Git. Добавлены безопасный example
+  env и инструкция создания secret files.
+- Добавлены Caddy automatic HTTPS, health checks, migration ordering, graceful stop
+  periods, production runbook, release checklist, customer handoff и Accepted
+  ADR-0015. Локальный Compose не менялся.
+
+### Проверки и runtime smoke
+
+- Итоговый production image успешно собран. Внутри него прошли Prisma generate,
+  Next.js 16.3.3 production build и worker build; runner содержит совместимый
+  bundled Prisma engine и OpenSSL.
+- На отдельной PostgreSQL 17 применены все **9** migrations; повторный status
+  подтвердил отсутствие pending migrations.
+- HTTPS через Caddy вернул
+  `{"status":"ok","service":"zaprosto-web"}`. Только Caddy имел host mappings;
+  PostgreSQL, web и worker их не имели.
+- Web и worker подтверждены как UID/GID 1001. Media volume доступен для записи
+  application user. Worker без реального token остался в безопасном
+  `BOT_TOKEN_REQUIRED`, не вызывал Telegram и при SIGTERM завершился событием
+  `WORKER_STOPPED`.
+- PostgreSQL custom dump восстановлен в отдельную rehearsal DB; в ней подтверждены
+  все **9** завершённых migrations, после чего DB и dump удалены. Media archive
+  восстановлен в отдельный volume; SHA-256 вымышленного файла до и после совпал.
+- Production и local `docker compose config --quiet` успешны. Реальные credentials,
+  реальные Telegram calls, customer data и рабочая БД не использовались.
+
+### Ограничение локальной проверки
+
+Docker Desktop Compose v5.4.0 на этом Windows host зависает до создания container,
+когда один service одновременно использует Windows bind mount и named volume.
+Проблема воспроизводится вне приложения; production-схема под целевой Linux host
+ради неё не изменялась. Поэтому полный `docker compose up/down` здесь не заявляется
+проверенным: эквивалентный runtime-контур был поднят теми же images, networks,
+commands, environment и named volumes, а secret/Caddy files для smoke помещены во
+временные named volumes. Compose config и все application/runtime границы проверены.
+
+### Продолжение
+
+Временные smoke containers, networks, volumes, образы, rehearsal DB/dump и
+вымышленные media удалены после проверки. Следующий и единственный оставшийся этап —
+07.3, финальная упаковка демонстрации и итоговая приёмка release-кандидата.
