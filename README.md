@@ -27,7 +27,18 @@
 
 ## Текущее состояние
 
-Выполнены и приняты этапы 00–06, mobile-приёмка 07.1 и production-пакет 07.2. Помимо прикладных сценариев MVP подготовлены отдельный self-hosted Compose-контур, единый immutable image для migration/web/worker, PostgreSQL 17, Caddy с HTTPS, persistent DB/media, file-based secrets, backup/restore runbook и пакет передачи заказчику. До объявления MVP полностью готовым остаётся финальная упаковка демонстрации 07.3.
+**MVP готов в подтверждённых границах:** выполнены и приняты этапы 00–07.3,
+включая итоговую локальную приёмку release-кандидата. Помимо прикладных сценариев
+подготовлены mobile-приёмка, отдельный self-hosted Compose-контур, единый immutable
+image для migration/web/worker, PostgreSQL 17, Caddy с HTTPS, persistent DB/media,
+file-based secrets, backup/restore runbook и пакет передачи заказчику. Повторяемый
+показ описан в [demo runbook](docs/demo-runbook.md) и
+[коротком acceptance checklist](docs/demo-acceptance-checklist.md).
+
+Граница поставки не изменилась: одна установка обслуживает один бизнес и один
+филиал; это self-hosted продукт, а не SaaS. VPS, домен и резервное хранилище
+выбирает и оплачивает заказчик. Реальные Telegram bot/token и внешний production
+deploy не входили в локальную приёмку 07.3.
 
 Добавлены серверные сервисы создания записи, идемпотентного повтора, подтверждения и отмены по защищённой ссылке. Контракт и проверки описаны в [документации этапа 04.1](docs/booking-service.md), транзакции и токен — в [ADR-0003](docs/decisions/0003-booking-idempotency-and-protected-links.md).
 
@@ -87,6 +98,8 @@ docker compose config
 - [Настройки времени и горизонта бронирования](docs/admin-settings.md)
 - [Журнал записей, статусы, контакты и перенос](docs/admin-appointments.md)
 - [Production-развёртывание и эксплуатация](docs/deployment.md)
+- [Демонстрация release-кандидата MVP](docs/demo-runbook.md)
+- [Acceptance checklist демонстрации](docs/demo-acceptance-checklist.md)
 - [Release checklist](docs/release-checklist.md)
 - [Передача установки заказчику](docs/customer-handoff.md)
 - [Дорожная карта](docs/roadmap.md)

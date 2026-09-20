@@ -147,5 +147,15 @@ HTTPS и единственными внешними портами 80/443, pers
 files, non-root runtime, health checks и graceful shutdown. Добавлены production
 runbook с backup/restore/rollback, release checklist, customer handoff и ADR-0015.
 
-MVP ещё не объявляется полностью готовым: остаётся только 07.3 — финальная упаковка
-демонстрации и итоговая приёмка release-кандидата.
+**07.3 выполнена.** Добавлены единый demo runbook и короткий acceptance checklist.
+Demo seed подтверждён как ручной, идемпотентный и недеструктивный: только явно
+вымышленный каталог без администратора, записей, контактов и Telegram. Итоговый
+release-кандидат прошёл format/lint/typecheck, 859 unit, 1397 PostgreSQL integration
+и один репрезентативный Chromium-прогон 124/124 на принятой mobile/desktop-матрице,
+production build web+worker, Prisma validate/generate/deploy/status, local/production
+Compose config и security/cleanup проверки.
+
+**MVP готов в подтверждённых границах.** Одна self-hosted установка обслуживает один
+бизнес и один филиал. VPS, домен и резервное хранилище оплачивает заказчик. Реальные
+Telegram bot/token, Telegram network и внешний production deploy не входили в
+локальную приёмку 07.3.

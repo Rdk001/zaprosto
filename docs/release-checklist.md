@@ -18,4 +18,6 @@
       Telegram token и credentials нет.
 - [ ] Реальная Telegram сеть не использовалась; smoke token пустой/Telegram disabled.
 - [ ] Deployment и customer handoff проверены; schema rollback не обещан.
-- [ ] MVP не объявлен полностью готовым: после 07.2 остаётся 07.3.
+- [ ] Финальная локальная приёмка 07.3 пройдена по
+      [demo checklist](demo-acceptance-checklist.md); реальные Telegram credentials,
+      внешний production deploy и платные сервисы в неё не входят.

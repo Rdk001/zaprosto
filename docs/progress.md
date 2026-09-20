@@ -2,7 +2,13 @@
 
 ## Текущий статус
 
-Выполнены и приняты этапы **00–06**, включая финальную техническую и security-приёмку Telegram 06.7. **07.1 — mobile UX, accessibility и визуальная приёмка критических сценариев — выполнена. 07.2 — production deployment и customer handoff — выполнена.** Весь MVP ещё не завершён: остаётся финальная упаковка демонстрации и итоговая приёмка release-кандидата 07.3.
+Выполнены и приняты этапы **00–07.3**. После mobile UX/accessibility 07.1 и
+production deployment/customer handoff 07.2 завершены финальная упаковка
+демонстрации и итоговая локальная приёмка release-кандидата 07.3. **MVP готов в
+подтверждённых границах:** одна self-hosted установка обслуживает один бизнес и один
+филиал; VPS, домен и резервное хранилище оплачивает заказчик. Реальные Telegram
+bot/token, Telegram network и внешний production deploy не входили в локальную
+приёмку.
 
 Результат 04.2 принят пользователем после повторной проверки. **05.1 прошла отдельную проверку и принята пользователем.** В отдельной проверке 05.2 обнаружен дефект согласования условий услуги; исправление реализовано и прошло полный повторный набор проверок (264 Vitest, 53 E2E). **Этап 05.2 и исправление согласования условий прошли отдельную проверку и приняты пользователем.** Рабочие учётные данные не создавались. Ограничения проверки и открытый вопрос npm audit сохранены; пользователь разрешил фиксацию 05.2 и отправку в origin/main после проверки актуальной удалённой ветки.
 
@@ -2363,3 +2369,83 @@ commands, environment и named volumes, а secret/Caddy files для smoke по�
 Временные smoke containers, networks, volumes, образы, rehearsal DB/dump и
 вымышленные media удалены после проверки. Следующий и единственный оставшийся этап —
 07.3, финальная упаковка демонстрации и итоговая приёмка release-кандидата.
+
+## Этап 07.3 — финальная упаковка демонстрации и приёмка MVP (2026-09-20)
+
+Исходная база: чистый `main`, `HEAD = main = origin/main =
+355c55d6f68e391ab50aa13fede004d1e4837fa4`. Commit и push не выполнялись.
+
+### Упаковка
+
+- Добавлены [единый demo runbook](demo-runbook.md) и
+  [короткий acceptance checklist](demo-acceptance-checklist.md): отдельная demo-БД,
+  migrations, явный seed, интерактивный admin без пароля в argv, web/disabled
+  worker, клиентский и административный порядок показа, protected links,
+  fake/local Telegram, безопасные сбои и точечный cleanup.
+- Runbook ссылается на mobile, deployment и customer handoff материалы, не
+  дублируя их. Production runtime 07.2 не менялся.
+- Инвентаризация product brief, business rules и user flows подтвердила покрытие:
+  SPECIFIC/ANY, расписание/перерывы/исключения, горизонт/зона, защищённая отмена,
+  каталог, журнал/история, ручная запись, контакты, перенос и статусы.
+- Код, Prisma schema/migrations, зависимости и бизнес-логика не менялись.
+
+### Demo seed
+
+- Проверены `scripts/demo-data.ts` и `scripts/seed-demo.ts`: зарезервированные
+  UUID, названия с маркером «демо», вымышленные мастера/описания, пустые `update` и
+  отсутствие delete/updateMany/raw SQL.
+- В точной отдельной БД `zaprosto_demo_073_20260920181500` применены 9 migrations,
+  первый и повторный `demo:seed` дали ровно 3 услуги, 2 мастера, 6 назначений,
+  14 рабочих интервалов и 14 перерывов. Appointment, AdminUser, Telegram links,
+  client/admin connections и outbox остались пустыми.
+- `prisma migrate status` подтвердил актуальную схему. После проверки удалена
+  только эта точная demo-БД.
+
+### Итоговые проверки
+
+- Node.js 24.19.0, npm 11.17.0; `npm ci` успешен.
+- `npm run format:check`, `npm run lint`, `npm run build`,
+  `npm run typecheck` и Prisma `validate/generate` успешны. Build включает
+  Next.js 16.3.3 production web и bundled ESM worker.
+- Unit: **73 файла, 859/859**.
+- PostgreSQL integration: **110 файлов, 1397/1397** на автоматически созданной
+  `zaprosto_test_34964141e71c444595aea9ace3550e23`; все 9 migrations
+  `deploy/status` успешны.
+- Один репрезентативный Chromium E2E-прогон восьми критических specs:
+  **124/124** на отдельной
+  `zaprosto_test_ed01ed7cb48a44ab9c7c6c4dd99ed9fa`. Использована существующая
+  матрица 360×800, 390×844, 412×915 и 1440×900; fake/local Telegram, без реальной
+  сети.
+- Local и production `docker compose config --quiet` успешны с безопасными
+  dummy/file placeholders. Полный production Compose `up/down` не повторялся:
+  runtime-доказательство 07.2 принято, а известное зависание Docker Desktop Compose
+  5.4.0 не связано с новым документационным diff.
+- Security scan проекта, `.next/static` и `.worker-dist`: private-key markers,
+  token-shaped credentials и Telegram Bot API URL с token — 0; в client assets также
+  нет `TELEGRAM_BOT_TOKEN` или Bot API origin. Реальные credentials и Telegram
+  calls не использовались.
+- После тестов: временных `zaprosto_test_*`/`zaprosto_demo_073_*` БД и listeners
+  на 3000/3108 — 0. Новых containers/networks/volumes не осталось; существующий до
+  задачи healthy local PostgreSQL container/volume не изменялся и не удалялся.
+- Финальные `git diff --check` и проверка форматирования выполнены после
+  документации.
+
+### Ограничения
+
+- Локальная приёмка не доказывает внешний Linux/VPS deploy, DNS/HTTPS, реального
+  Telegram bot/token или доставку через Telegram network. Эти действия выполняются
+  отдельно по deployment/handoff runbooks и требуют ресурсов заказчика.
+- `npm audit --omit=dev` сообщает **4 high** в транзитивных
+  `deepmerge-ts` и `mysql2` через Prisma tooling; предложенный audit fix
+  понижает Prisma до breaking 6.19.3. `audit fix`, обновление/понижение зависимостей
+  и изменение lockfile не выполнялись. Проект использует PostgreSQL, но advisories
+  остаются явно зафиксированным dependency risk.
+- Сохраняются принятые предупреждения pg 8 о concurrent `client.query` и Next.js
+  `next start` при standalone output; успешные integration/E2E и production
+  container runtime 07.2 не отменяют необходимость планового обновления.
+
+### Итог
+
+Этап 07.3 завершён. MVP готов в подтверждённых однофилиальных self-hosted границах.
+Commit и push не выполнялись; результат передан на независимую проверку управляющей
+задаче.
